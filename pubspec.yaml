@@ -1,0 +1,27 @@
+name: opentube
+description: "A modern open-source music player."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  just_audio: ^0.9.46
+  audio_session: ^0.1.25
+  audio_service: ^0.18.17
+  file_picker: ^8.3.7
+  http: ^1.2.0
+  shared_preferences: ^2.5.3
+  path_provider: ^2.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
