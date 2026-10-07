@@ -5,7 +5,6 @@ import 'package:audiotags/audiotags.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:audio_service/audio_service.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
@@ -15,12 +14,19 @@ import 'settings_controller.dart';
 import 'models.dart';
 import 'audio_handler.dart';
 import 'player_screen.dart';
+import 'equalizer_screen.dart';
+import 'equalizer_controller.dart';
+import 'dsp_engine.dart';
 
 late AudioHandler audioHandler;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  audioHandler = await initAudioService();
+  try {
+    audioHandler = await initAudioService();
+  } catch (e) {
+    debugPrint('AudioService init failed: $e');
+  }
   runApp(const OpenTubeApp());
 }
 
@@ -78,7 +84,7 @@ class MainContainerScreen extends StatefulWidget {
 }
 
 class _MainContainerScreenState extends State<MainContainerScreen> {
-  int _currentIndex = 2; // За замовчуванням відкривати вкладку "Інтернет"
+  int _currentIndex = 2;
   List<Song> librarySongs = [];
   List<CustomPlaylist> userPlaylists = [];
   bool isLoadingLibrary = true;
@@ -86,8 +92,6 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
   final ValueNotifier<Song?> currentSongNotifier = ValueNotifier<Song?>(null);
   List<Song> currentQueue = [];
   int currentQueueIndex = -1;
-
-  AudioPlayer get _player => (audioHandler as MyAudioHandler).player;
 
   @override
   void initState() {
@@ -97,6 +101,10 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
     final handler = audioHandler as MyAudioHandler;
     handler.onNextPressed = _playNext;
     handler.onPrevPressed = _playPrev;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      EqualizerController.instance.loadSettings();
+    });
   }
 
   Future<void> _loadLocalData() async {
@@ -584,29 +592,31 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         debugPrint('--> [Player Error] Немає валідного URL або trackId!');
         return;
       }
+    } else {
+      if (!finalUrl.startsWith('file://') && !finalUrl.startsWith('content://')) {
+        finalUrl = Uri.file(finalUrl).toString();
+      }
     }
 
     await customHandler.updateMetadata(song.title, song.artist, song.artworkUrl);
 
     try {
-      await customHandler.player.stop();
+      debugPrint('--> [DSP ExoPlayer] Завантаження: $finalUrl');
+      await DspEngine.instance.load(finalUrl);
+      await DspEngine.instance.play();
 
-      if (song.isOnline) {
-        debugPrint('--> [Player] Завантаження стріму: $finalUrl');
-        await customHandler.player.setUrl(
-          finalUrl,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36',
-          },
-        );
-        await customHandler.player.seek(Duration.zero);
-      } else {
-        debugPrint('--> [Player] Локальний файл: $finalUrl');
-        await customHandler.player.setFilePath(finalUrl);
-        await customHandler.player.seek(Duration.zero);
-      }
+      customHandler.playbackState.add(
+        customHandler.playbackState.value.copyWith(
+          playing: true,
+          controls: [
+            MediaControl.skipToPrevious,
+            MediaControl.pause,
+            MediaControl.skipToNext,
+          ],
+        ),
+      );
 
-      await audioHandler.play();
+      EqualizerController.instance.applyAll();
     } catch (e) {
       debugPrint('--> [Player Playback Error]: $e');
       if (mounted) {
@@ -639,12 +649,13 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
       MaterialPageRoute(
         builder: (ctx) => PlayerScreen(
           songNotifier: currentSongNotifier,
-          audioPlayer: _player,
-          onPlayPause: () {
-            if (_player.playing) {
-              audioHandler.pause();
+          audioHandler: audioHandler,
+          onPlayPause: () async {
+            final playing = audioHandler.playbackState.value.playing;
+            if (playing) {
+              await audioHandler.pause();
             } else {
-              audioHandler.play();
+              await audioHandler.play();
             }
           },
           onNext: _playNext,
@@ -715,6 +726,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         onPlaySong: (songs, index) => _playSong(songs, index),
         onShowMenu: _showTrackMenu,
       ),
+      const EqualizerScreen(),
       const SettingsTab(),
     ];
 
@@ -734,10 +746,26 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) => setState(() => _currentIndex = index),
         destinations: [
-          NavigationDestination(icon: const Icon(Icons.library_music), label: AppLocale.tr('media')),
-          NavigationDestination(icon: const Icon(Icons.search), label: AppLocale.tr('search')),
-          NavigationDestination(icon: const Icon(Icons.language), label: AppLocale.tr('discover')),
-          NavigationDestination(icon: const Icon(Icons.settings), label: AppLocale.tr('settings')),
+          NavigationDestination(
+            icon: const Icon(Icons.library_music),
+            label: AppLocale.tr('media'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.search),
+            label: AppLocale.tr('search'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.language),
+            label: AppLocale.tr('discover'),
+          ),
+          const NavigationDestination(
+            icon: Icon(Icons.tune_rounded),
+            label: 'EQ',
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.settings),
+            label: AppLocale.tr('settings'),
+          ),
         ],
       ),
     );
@@ -1114,9 +1142,7 @@ class MiniPlayer extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
-                    mainAxisAlignment: Center(child: null).alignment == Alignment.center
-                        ? MainAxisAlignment.center
-                        : MainAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
@@ -1160,11 +1186,11 @@ class MiniPlayer extends StatelessWidget {
                           playing ? Icons.pause : Icons.play_arrow,
                           color: Colors.black,
                         ),
-                        onPressed: () {
+                        onPressed: () async {
                           if (playing) {
-                            audioHandler.pause();
+                            await audioHandler.pause();
                           } else {
-                            audioHandler.play();
+                            await audioHandler.play();
                           }
                         },
                       ),

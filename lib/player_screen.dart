@@ -1,14 +1,15 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:just_audio/just_audio.dart';
+import 'package:audio_service/audio_service.dart';
 import 'models.dart';
 import 'settings_controller.dart';
 
 class PlayerScreen extends StatefulWidget {
   final ValueNotifier<Song?> songNotifier;
-  final AudioPlayer audioPlayer;
+  final AudioHandler audioHandler;
   final VoidCallback onPlayPause;
   final VoidCallback onNext;
   final VoidCallback onPrev;
@@ -17,7 +18,7 @@ class PlayerScreen extends StatefulWidget {
   const PlayerScreen({
     super.key,
     required this.songNotifier,
-    required this.audioPlayer,
+    required this.audioHandler,
     required this.onPlayPause,
     required this.onNext,
     required this.onPrev,
@@ -30,9 +31,7 @@ class PlayerScreen extends StatefulWidget {
 
 class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMixin {
   bool isPlaying = false;
-  bool isShuffle = false;
-  LoopMode loopMode = LoopMode.off;
-  Duration duration = Duration.zero;
+  Duration duration = const Duration(minutes: 3, seconds: 30);
   Duration position = Duration.zero;
 
   late final AnimationController _rotationController;
@@ -40,12 +39,13 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
   late final AnimationController _beatController;
   late final AnimationController _fluidController;
 
+  StreamSubscription<PlaybackState>? _playbackSub;
+  StreamSubscription<MediaItem?>? _mediaItemSub;
+
   @override
   void initState() {
     super.initState();
-    isPlaying = widget.audioPlayer.playing;
-    isShuffle = widget.audioPlayer.shuffleModeEnabled;
-    loopMode = widget.audioPlayer.loopMode;
+    isPlaying = widget.audioHandler.playbackState.value.playing;
 
     _rotationController = AnimationController(
       vsync: this,
@@ -74,11 +74,12 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       _fluidController.repeat();
     }
 
-    widget.audioPlayer.playerStateStream.listen((state) {
+    _playbackSub = widget.audioHandler.playbackState.listen((state) {
       if (!mounted) return;
       final playing = state.playing;
       setState(() {
         isPlaying = playing;
+        position = state.position;
         if (playing) {
           _morphController.forward();
           if (!_rotationController.isAnimating) _rotationController.repeat();
@@ -93,29 +94,18 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       });
     });
 
-    widget.audioPlayer.durationStream.listen((d) {
+    _mediaItemSub = widget.audioHandler.mediaItem.listen((item) {
       if (!mounted) return;
-      setState(() => duration = d ?? Duration.zero);
-    });
-
-    widget.audioPlayer.positionStream.listen((p) {
-      if (!mounted) return;
-      setState(() => position = p);
-    });
-
-    widget.audioPlayer.shuffleModeEnabledStream.listen((enabled) {
-      if (!mounted) return;
-      setState(() => isShuffle = enabled);
-    });
-
-    widget.audioPlayer.loopModeStream.listen((mode) {
-      if (!mounted) return;
-      setState(() => loopMode = mode);
+      if (item?.duration != null) {
+        setState(() => duration = item!.duration!);
+      }
     });
   }
 
   @override
   void dispose() {
+    _playbackSub?.cancel();
+    _mediaItemSub?.cancel();
     _rotationController.dispose();
     _morphController.dispose();
     _beatController.dispose();
@@ -304,7 +294,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                 },
                 child: Stack(
                   children: [
-                    // 1. Повноекранний живий фон лава-лампи
+                    // Повноекранний живий фон лава-лампи
                     Positioned.fill(
                       child: AnimatedBuilder(
                         animation: Listenable.merge([_beatController, _fluidController, _morphController]),
@@ -324,11 +314,10 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                       ),
                     ),
 
-                    // 2. Інтерфейс плеєра
+                    // Інтерфейс плеєра
                     SafeArea(
                       child: Column(
                         children: [
-                          // Верхній бар
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
                             child: Row(
@@ -349,7 +338,6 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                             ),
                           ),
 
-                          // Блок обкладинки
                           Expanded(
                             child: Center(
                               child: LayoutBuilder(
@@ -426,7 +414,6 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                             ),
                           ),
 
-                          // Текстовий блок
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 28.0, vertical: 8.0),
                             child: GestureDetector(
@@ -449,7 +436,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                                 },
                                 child: Column(
                                   key: ValueKey<String>('info_${currentSong.title}_$displayArtist'),
-                                  mainAxisSize: MainAxisSize.min,
+                                  mainAxisSize: dynamicTextKey(currentSong),
                                   children: [
                                     Text(
                                       currentSong.title,
@@ -509,7 +496,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                                             activeColor: accent,
                                             inactiveColor: settings.subTextColor.withOpacity(0.20),
                                             onSeek: (newPos) async {
-                                              await widget.audioPlayer.seek(newPos);
+                                              await widget.audioHandler.seek(newPos);
                                             },
                                           ),
                                         );
@@ -519,17 +506,9 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                                     Padding(
                                       padding: const EdgeInsets.symmetric(horizontal: 16.0),
                                       child: Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                                         crossAxisAlignment: CrossAxisAlignment.center,
                                         children: [
-                                          IconButton(
-                                            icon: Icon(
-                                              Icons.shuffle_rounded,
-                                              color: isShuffle ? accent : settings.subTextColor,
-                                              size: 28,
-                                            ),
-                                            onPressed: () async => await widget.audioPlayer.setShuffleModeEnabled(!isShuffle),
-                                          ),
                                           IconButton(
                                             iconSize: 48,
                                             icon: Icon(Icons.skip_previous_rounded, color: settings.textColor),
@@ -578,17 +557,6 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                                             icon: Icon(Icons.skip_next_rounded, color: settings.textColor),
                                             onPressed: widget.onNext,
                                           ),
-                                          IconButton(
-                                            icon: Icon(
-                                              loopMode == LoopMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
-                                              color: loopMode != LoopMode.off ? accent : settings.subTextColor,
-                                              size: 28,
-                                            ),
-                                            onPressed: () async {
-                                              final next = loopMode == LoopMode.off ? LoopMode.one : LoopMode.off;
-                                              await widget.audioPlayer.setLoopMode(next);
-                                            },
-                                          ),
                                         ],
                                       ),
                                     ),
@@ -598,7 +566,6 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                             ),
                           ),
 
-                          // Таймкоди
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
                             child: Row(
@@ -640,6 +607,8 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
       },
     );
   }
+
+  MainAxisSize dynamicTextKey(Song currentSong) => MainAxisSize.min;
 }
 
 class _FullscreenLavalampBackgroundPainter extends CustomPainter {

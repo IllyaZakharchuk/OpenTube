@@ -1,7 +1,8 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:audio_service/audio_service.dart';
-import 'package:just_audio/just_audio.dart';
+//import 'package:just_audio/just_audio.dart';
+import 'dart:async';
+import 'dsp_engine.dart';
 
 Future<AudioHandler> initAudioService() async {
   return await AudioService.init(
@@ -16,77 +17,76 @@ Future<AudioHandler> initAudioService() async {
 }
 
 class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
-  final AudioPlayer _player = AudioPlayer();
-  AudioPlayer get player => _player;
-
   VoidCallback? onNextPressed;
   VoidCallback? onPrevPressed;
+  Timer? _ticker;
 
   MyAudioHandler() {
-    _initStreams();
+    _startPositionTicker();
   }
 
-  void _initStreams() {
-    _player.playbackEventStream.listen((event) {
-      final playing = _player.playing;
-      playbackState.add(playbackState.value.copyWith(
-        playing: playing,
-        controls: [
-          MediaControl.skipToPrevious,
-          playing ? MediaControl.pause : MediaControl.play,
-          MediaControl.skipToNext,
-        ],
-        systemActions: const {
-          MediaAction.seek,
-        },
-        androidCompactActionIndices: const [0, 1, 2],
-        processingState: const {
-          ProcessingState.idle: AudioProcessingState.idle,
-          ProcessingState.loading: AudioProcessingState.loading,
-          ProcessingState.buffering: AudioProcessingState.buffering,
-          ProcessingState.ready: AudioProcessingState.ready,
-          ProcessingState.completed: AudioProcessingState.completed,
-        }[_player.processingState]!,
-        updatePosition: _player.position,
-        bufferedPosition: _player.bufferedPosition,
-        speed: _player.speed,
-      ));
-    });
-
-    // Слухаємо позицію треку, щоб шторка плавно показувала прогрес
-    _player.positionStream.listen((position) {
-      final oldState = playbackState.value;
-      playbackState.add(oldState.copyWith(
-        updatePosition: position,
-      ));
-    });
-
-    _player.playerStateStream.listen((state) {
-      if (state.processingState == ProcessingState.completed) {
-        skipToNext();
+  void _startPositionTicker() {
+    _ticker = Timer.periodic(const Duration(milliseconds: 500), (_) async {
+      if (playbackState.value.playing) {
+        final posMs = await DspEngine.instance.position();
+        playbackState.add(playbackState.value.copyWith(
+          updatePosition: Duration(milliseconds: posMs),
+        ));
       }
     });
   }
 
   Future<void> updateMetadata(String title, String artist, String? artUrl, {Duration? duration}) async {
+    Uri? resolvedArtUri;
+    if (artUrl != null && artUrl.isNotEmpty) {
+      if (artUrl.startsWith('http')) {
+        resolvedArtUri = Uri.parse(artUrl);
+      } else {
+        resolvedArtUri = Uri.file(artUrl);
+      }
+    }
+
     mediaItem.add(MediaItem(
       id: title,
       album: "OpenTube",
       title: title,
       artist: artist,
-      artUri: artUrl != null && artUrl.isNotEmpty ? Uri.parse(artUrl) : null,
-      duration: duration, // <--- Передаємо загальну тривалість треку в шторку
+      artUri: resolvedArtUri,
+      duration: duration ?? const Duration(minutes: 3, seconds: 30),
     ));
   }
 
   @override
-  Future<void> play() => _player.play();
+  Future<void> play() async {
+    await DspEngine.instance.play();
+    playbackState.add(playbackState.value.copyWith(
+      playing: true,
+      controls: [
+        MediaControl.skipToPrevious,
+        MediaControl.pause,
+        MediaControl.skipToNext,
+      ],
+    ));
+  }
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async {
+    await DspEngine.instance.pause();
+    playbackState.add(playbackState.value.copyWith(
+      playing: false,
+      controls: [
+        MediaControl.skipToPrevious,
+        MediaControl.play,
+        MediaControl.skipToNext,
+      ],
+    ));
+  }
 
   @override
-  Future<void> seek(Duration position) => _player.seek(position);
+  Future<void> seek(Duration position) async {
+    await DspEngine.instance.seekTo(position.inMilliseconds);
+    playbackState.add(playbackState.value.copyWith(updatePosition: position));
+  }
 
   @override
   Future<void> skipToNext() async {
@@ -100,7 +100,9 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
 
   @override
   Future<void> stop() async {
-    await _player.stop();
+    await DspEngine.instance.pause();
+    _ticker?.cancel();
+    playbackState.add(playbackState.value.copyWith(playing: false));
     await super.stop();
   }
 }
