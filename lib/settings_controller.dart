@@ -1,24 +1,19 @@
 import 'package:flutter/material.dart';
 
-// Моделі для вибору кольору фону
 enum BgTheme {
-  amoled, // #000000
-  dark,   // #121212
-  white,  // #F8F9FA
+  amoled,
+  dark,
+  white,
 }
 
 class SettingsController extends ChangeNotifier {
   static final SettingsController instance = SettingsController._internal();
   SettingsController._internal();
 
-  // 1. Мова
   String currentLang = 'uk';
-
-  // 2. Кольори теми
   BgTheme bgTheme = BgTheme.amoled;
-  Color accentColor = const Color(0xFFBB86FC); // Дефолтний акцент
+  Color accentColor = const Color(0xFFBB86FC);
 
-  // Отримання реального кольору фону
   Color get backgroundColor {
     switch (bgTheme) {
       case BgTheme.amoled:
@@ -30,7 +25,6 @@ class SettingsController extends ChangeNotifier {
     }
   }
 
-  // Колір карток/полів
   Color get surfaceColor {
     switch (bgTheme) {
       case BgTheme.amoled:
@@ -42,9 +36,7 @@ class SettingsController extends ChangeNotifier {
     }
   }
 
-  // Колір головного тексту
   Color get textColor => bgTheme == BgTheme.white ? Colors.black87 : Colors.white;
-  // Колір другорядного тексту
   Color get subTextColor => bgTheme == BgTheme.white ? Colors.black54 : Colors.white54;
 
   void setLanguage(String code) {
@@ -62,7 +54,6 @@ class SettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Словник перекладів
   String tr(String key) {
     const Map<String, Map<String, String>> localizedValues = {
       'uk': {
@@ -79,6 +70,23 @@ class SettingsController extends ChangeNotifier {
         'search': 'Пошук онлайн',
         'tracks': 'Треки',
         'search_hint': 'Введіть назву треку або автора...',
+        // Еквалайзер & DSP
+        'equalizer': 'Еквалайзер',
+        'dsp_effects': 'DSP Ефекти',
+        'enable_effects': 'Увімкнути обробку',
+        'presets': 'Пресети',
+        'custom_preset': 'Користувацький',
+        'preamp': 'Передпідсилювач (Preamp)',
+        'tube_drive': 'Ламповий драйв (Сатурація)',
+        'exciter': 'Гармонічний ексайтер',
+        'stereo_width': 'Ширина стереобази',
+        'reverb': 'Просторова реверберація',
+        'reset': 'Скинути',
+        'save_preset': 'Зберегти пресет',
+        'delete_preset': 'Видалити пресет',
+        'preset_name_hint': 'Введіть назву пресету',
+        'cancel': 'Скасувати',
+        'save': 'Зберегти',
       },
       'en': {
         'settings': 'Settings',
@@ -94,6 +102,23 @@ class SettingsController extends ChangeNotifier {
         'search': 'Search Online',
         'tracks': 'Tracks',
         'search_hint': 'Enter track or artist name...',
+        // Equalizer & DSP
+        'equalizer': 'Equalizer',
+        'dsp_effects': 'DSP Effects',
+        'enable_effects': 'Enable Processing',
+        'presets': 'Presets',
+        'custom_preset': 'Custom',
+        'preamp': 'Preamp Gain',
+        'tube_drive': 'Tube Drive (Saturation)',
+        'exciter': 'Harmonic Exciter',
+        'stereo_width': 'Stereo Width',
+        'reverb': 'Spatial Reverb',
+        'reset': 'Reset',
+        'save_preset': 'Save Preset',
+        'delete_preset': 'Delete Preset',
+        'preset_name_hint': 'Enter preset name',
+        'cancel': 'Cancel',
+        'save': 'Save',
       },
       'pl': {
         'settings': 'Ustawienia',
@@ -109,6 +134,23 @@ class SettingsController extends ChangeNotifier {
         'search': 'Szukaj online',
         'tracks': 'Utwory',
         'search_hint': 'Wpisz tytuł lub wykonawcę...',
+        // Korektor & DSP
+        'equalizer': 'Korektor',
+        'dsp_effects': 'Efekty DSP',
+        'enable_effects': 'Włącz przetwarzanie',
+        'presets': 'Profile',
+        'custom_preset': 'Własny',
+        'preamp': 'Wzmocnienie wstępne',
+        'tube_drive': 'Ciepło lampowe',
+        'exciter': 'Wzbudnik harmonicznych',
+        'stereo_width': 'Szerokość stereo',
+        'reverb': 'Pogłos przestrzenny',
+        'reset': 'Resetuj',
+        'save_preset': 'Zapisz profil',
+        'delete_preset': 'Usuń profil',
+        'preset_name_hint': 'Wpisz nazwę profilu',
+        'cancel': 'Anuluj',
+        'save': 'Zapisz',
       },
       'de': {
         'settings': 'Einstellungen',
@@ -124,6 +166,23 @@ class SettingsController extends ChangeNotifier {
         'search': 'Online suchen',
         'tracks': 'Titel',
         'search_hint': 'Titel oder Künstler eingeben...',
+        // Equalizer & DSP
+        'equalizer': 'Equalizer',
+        'dsp_effects': 'DSP-Effekte',
+        'enable_effects': 'Verarbeitung aktivieren',
+        'presets': 'Voreinstellungen',
+        'custom_preset': 'Benutzerdefiniert',
+        'preamp': 'Vorverstärkung',
+        'tube_drive': 'Röhrenverzerrung',
+        'exciter': 'Oberton-Exciter',
+        'stereo_width': 'Stereobreite',
+        'reverb': 'Raumhall',
+        'reset': 'Zurücksetzen',
+        'save_preset': 'Profil speichern',
+        'delete_preset': 'Profil löschen',
+        'preset_name_hint': 'Profilname eingeben',
+        'cancel': 'Abbrechen',
+        'save': 'Speichern',
       },
       'es': {
         'settings': 'Ajustes',
@@ -139,6 +198,23 @@ class SettingsController extends ChangeNotifier {
         'search': 'Buscar en línea',
         'tracks': 'Canciones',
         'search_hint': 'Buscar canción o artista...',
+        // Ecualizador & DSP
+        'equalizer': 'Ecualizador',
+        'dsp_effects': 'Efectos DSP',
+        'enable_effects': 'Activar procesamiento',
+        'presets': 'Preajustes',
+        'custom_preset': 'Personalizado',
+        'preamp': 'Preamplificador',
+        'tube_drive': 'Saturación valvular',
+        'exciter': 'Excitador armónico',
+        'stereo_width': 'Amplitud estéreo',
+        'reverb': 'Reverberación',
+        'reset': 'Restablecer',
+        'save_preset': 'Guardar preajuste',
+        'delete_preset': 'Eliminar preajuste',
+        'preset_name_hint': 'Nombre del preajuste',
+        'cancel': 'Cancelar',
+        'save': 'Guardar',
       },
     };
 

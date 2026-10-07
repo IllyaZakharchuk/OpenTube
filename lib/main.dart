@@ -17,15 +17,20 @@ import 'player_screen.dart';
 import 'equalizer_screen.dart';
 import 'equalizer_controller.dart';
 import 'dsp_engine.dart';
+import 'package:permission_handler/permission_handler.dart';
 
-late AudioHandler audioHandler;
+AudioHandler? audioHandler;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Запитуємо дозвіл на сповіщення при старті
+  await Permission.notification.request();
+
   try {
     audioHandler = await initAudioService();
-  } catch (e) {
-    debugPrint('AudioService init failed: $e');
+  } catch (e, stack) {
+    debugPrint('--> [AudioService CRASH]: $e\n$stack');
   }
   runApp(const OpenTubeApp());
 }
@@ -98,9 +103,18 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
     super.initState();
     _loadLocalData();
 
-    final handler = audioHandler as MyAudioHandler;
-    handler.onNextPressed = _playNext;
-    handler.onPrevPressed = _playPrev;
+    if (audioHandler is MyAudioHandler) {
+      final handler = audioHandler as MyAudioHandler;
+      handler.onNextPressed = _playNext;
+      handler.onPrevPressed = _playPrev;
+    }
+
+    // Слухаємо нативну подію завершення треку від ExoPlayer
+    DspEngine.instance.onTrackEnded = () {
+      if (mounted) {
+        _playNext();
+      }
+    };
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       EqualizerController.instance.loadSettings();
@@ -582,7 +596,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
     final song = songs[index];
     currentSongNotifier.value = song;
 
-    final customHandler = audioHandler as MyAudioHandler;
+    final customHandler = audioHandler as MyAudioHandler?;
 
     String finalUrl = song.path;
     if (song.isOnline) {
@@ -598,23 +612,29 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
       }
     }
 
-    await customHandler.updateMetadata(song.title, song.artist, song.artworkUrl);
-
     try {
       debugPrint('--> [DSP ExoPlayer] Завантаження: $finalUrl');
       await DspEngine.instance.load(finalUrl);
-      await DspEngine.instance.play();
 
-      customHandler.playbackState.add(
-        customHandler.playbackState.value.copyWith(
-          playing: true,
-          controls: [
-            MediaControl.skipToPrevious,
-            MediaControl.pause,
-            MediaControl.skipToNext,
-          ],
-        ),
-      );
+      // Отримуємо тривалість напряму від нативного ExoPlayer
+      await Future.delayed(const Duration(milliseconds: 250));
+      final totalMs = await DspEngine.instance.duration();
+
+      final trackDuration = totalMs > 0
+          ? Duration(milliseconds: totalMs)
+          : const Duration(minutes: 3, seconds: 30);
+
+      if (customHandler != null) {
+        await customHandler.updateMetadata(
+          song.title,
+          song.artist,
+          song.artworkUrl,
+          duration: trackDuration,
+        );
+        await customHandler.play();
+      } else {
+        await DspEngine.instance.play();
+      }
 
       EqualizerController.instance.applyAll();
     } catch (e) {
@@ -643,19 +663,22 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
   }
 
   void _openPlayerScreen() {
-    if (currentSongNotifier.value == null) return;
+    if (currentSongNotifier.value == null || audioHandler == null) return;
+
+    final handler = audioHandler!;
+
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (ctx) => PlayerScreen(
           songNotifier: currentSongNotifier,
-          audioHandler: audioHandler,
+          audioHandler: handler,
           onPlayPause: () async {
-            final playing = audioHandler.playbackState.value.playing;
+            final playing = handler.playbackState.value.playing;
             if (playing) {
-              await audioHandler.pause();
+              await handler.pause();
             } else {
-              await audioHandler.play();
+              await handler.play();
             }
           },
           onNext: _playNext,
@@ -1172,7 +1195,7 @@ class MiniPlayer extends StatelessWidget {
                   onPressed: onPrev,
                 ),
                 StreamBuilder<PlaybackState>(
-                  stream: audioHandler.playbackState,
+                  stream: audioHandler?.playbackState ?? const Stream.empty(),
                   builder: (context, stateSnapshot) {
                     final playing = stateSnapshot.data?.playing ?? false;
                     return Container(
@@ -1187,10 +1210,11 @@ class MiniPlayer extends StatelessWidget {
                           color: Colors.black,
                         ),
                         onPressed: () async {
+                          if (audioHandler == null) return;
                           if (playing) {
-                            await audioHandler.pause();
+                            await audioHandler!.pause();
                           } else {
-                            await audioHandler.play();
+                            await audioHandler!.play();
                           }
                         },
                       ),

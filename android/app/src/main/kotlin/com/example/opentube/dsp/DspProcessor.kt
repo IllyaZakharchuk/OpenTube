@@ -163,9 +163,9 @@ class SmallRoomReverb {
             return
         }
 
-        val input = (inL + inR) * 0.015
+        val input = (inL + inR) * 0.02
         val damp = 0.53
-        val roomFeedback = 0.74
+        val roomFeedback = 0.75
 
         var outL = 0.0
         var outR = 0.0
@@ -180,8 +180,8 @@ class SmallRoomReverb {
             outR = allpassR[i].process(outR)
         }
 
-        out[0] = inL * (1.0 - mix * 0.45) + outL * mix
-        out[1] = inR * (1.0 - mix * 0.45) + outR * mix
+        out[0] = inL * (1.0 - mix * 0.4) + outL * mix
+        out[1] = inR * (1.0 - mix * 0.4) + outR * mix
     }
 
     fun reset() {
@@ -201,19 +201,20 @@ class DspProcessor : BaseAudioProcessor() {
 
     private var eq: Array<Array<Biquad>> = arrayOf(emptyArray(), emptyArray())
     private val spatialHp = arrayOf(Biquad(), Biquad())
-    private val vocalBandpass = arrayOf(Biquad(), Biquad())
+    private val crossfeedLp = arrayOf(Biquad(), Biquad())
     private val roomReverb = SmallRoomReverb()
+
+    // Симетричний буфер для кросфіду (винесення джерел вперед без зсуву балансу)
+    private var xfeedBufL = DoubleArray(128)
+    private var xfeedBufR = DoubleArray(128)
+    private var xfeedPtr = 0
+    private var xfeedDelay = 12
 
     // Haas Side Delay
     private var delayBufferL = DoubleArray(1024)
     private var delayBufferR = DoubleArray(1024)
     private var delayPtr = 0
     private var delaySamples = 0
-
-    // Center Stage Decoupler Buffer (для виносу вокалу з голови)
-    private var vocalDelayBuf = DoubleArray(256)
-    private var vocalDelayPtr = 0
-    private var vocalDelaySamples = 0
 
     private var preamp = 1.0
 
@@ -223,8 +224,8 @@ class DspProcessor : BaseAudioProcessor() {
         ) return AudioFormat.NOT_SET
         fs = inputAudioFormat.sampleRate.toDouble()
         delaySamples = (fs * 0.012).roundToInt().coerceIn(10, 900)
-        // 1.8 мс затримка для моно-центру (психоакустичний винос джерела вперед)
-        vocalDelaySamples = (fs * 0.0018).roundToInt().coerceIn(10, 200)
+        // Рівно 280 мікросекунд (симетрична затримка голови)
+        xfeedDelay = (fs * 0.00028).roundToInt().coerceIn(4, 64)
         applied = null
         return inputAudioFormat
     }
@@ -246,8 +247,8 @@ class DspProcessor : BaseAudioProcessor() {
                 eq[ch][i].configure(b.type, fs, b.freq.toDouble(), b.gainDb.toDouble(), b.q.toDouble())
             }
             spatialHp[ch].configure(BandType.HIGH_PASS, fs, 180.0, 0.0, 0.707)
-            // Виділення діапазону людського голосу (300 Hz - 4000 Hz)
-            vocalBandpass[ch].configure(BandType.PEAK, fs, 1200.0, 0.0, 0.5)
+            // Фільтр Bauer кросфіду: плавний спад вище 750 Гц на протилежне вухо
+            crossfeedLp[ch].configure(BandType.LOW_PASS, fs, 750.0, 0.0, 0.6)
         }
         applied = c
     }
@@ -276,21 +277,21 @@ class DspProcessor : BaseAudioProcessor() {
                     sample[ch] = x
                 }
 
-                // 2. Center Stage Decoupler (Винос голосу з голови вперед)
-                // Виділяємо чистий моно-центр
-                val center = (sample[0] + sample[1]) * 0.5
-                vocalDelayBuf[vocalDelayPtr] = center
-                val vReadIdx = (vocalDelayPtr - vocalDelaySamples + vocalDelayBuf.size) % vocalDelayBuf.size
-                val delayedCenter = vocalDelayBuf[vReadIdx]
-                vocalDelayPtr = (vocalDelayPtr + 1) % vocalDelayBuf.size
+                // 2. Ідеально симетричний бінауральний кросфід (виносить голос уперед, баланс рівно 0:0)
+                xfeedBufL[xfeedPtr] = sample[0]
+                xfeedBufR[xfeedPtr] = sample[1]
+                val xReadIdx = (xfeedPtr - xfeedDelay + xfeedBufL.size) % xfeedBufL.size
+                val delayedL = xfeedBufL[xReadIdx]
+                val delayedR = xfeedBufR[xReadIdx]
+                xfeedPtr = (xfeedPtr + 1) % xfeedBufL.size
 
-                // Підмішуємо злегка декоррельовану затримку в протифазі:
-                // голос залишається по центру, але зміщується зсередини черепа у простір перед обличчям
-                val vocalAir = (center - delayedCenter) * 0.28
-                sample[0] = sample[0] + vocalAir
-                sample[1] = sample[1] - vocalAir
+                val crossL = crossfeedLp[1].process(delayedR) * 0.35
+                val crossR = crossfeedLp[0].process(delayedL) * 0.35
 
-                // 3. Poweramp Stereo X (бічні інструменти)
+                sample[0] = sample[0] * 0.88 + crossL
+                sample[1] = sample[1] * 0.88 + crossR
+
+                // 3. Stereo X (дзеркальне розширення)
                 if (stereoWidth > 0.02) {
                     val diffL = spatialHp[0].process(sample[0] - sample[1])
                     val diffR = spatialHp[1].process(sample[1] - sample[0])
@@ -303,11 +304,11 @@ class DspProcessor : BaseAudioProcessor() {
                     val delR = delayBufferR[rIdx]
                     delayPtr = (delayPtr + 1) % delayBufferL.size
 
-                    sample[0] += (delR * 0.75 - diffR * 0.25) * stereoWidth
-                    sample[1] += (delL * 0.75 - diffL * 0.25) * stereoWidth
+                    sample[0] += (delR * 0.7 - diffR * 0.25) * stereoWidth
+                    sample[1] += (delL * 0.7 - diffL * 0.25) * stereoWidth
                 }
 
-                // 4. Small Room Reverb
+                // 4. Small Room Reverb (32-42% кімнати)
                 roomReverb.process(sample[0], sample[1], c.reverbMix.toDouble(), revOut)
                 sample[0] = revOut[0]
                 sample[1] = revOut[1]
@@ -337,13 +338,14 @@ class DspProcessor : BaseAudioProcessor() {
     override fun onReset() {
         eq.forEach { ch -> ch.forEach { it.reset() } }
         spatialHp.forEach { it.reset() }
-        vocalBandpass.forEach { it.reset() }
+        crossfeedLp.forEach { it.reset() }
         roomReverb.reset()
         delayBufferL.fill(0.0)
         delayBufferR.fill(0.0)
         delayPtr = 0
-        vocalDelayBuf.fill(0.0)
-        vocalDelayPtr = 0
+        xfeedBufL.fill(0.0)
+        xfeedBufR.fill(0.0)
+        xfeedPtr = 0
         applied = null
     }
 }

@@ -42,7 +42,7 @@ class DspConfig {
   final double tubeDrive;
   final double exciterAmount;
   final double stereoWidth;
-  final double reverbMix; // <-- нове поле
+  final double reverbMix;
   final double limiterCeilingDb;
 
   const DspConfig({
@@ -98,15 +98,26 @@ class DspConfig {
 
 class DspEngine {
   static final DspEngine instance = DspEngine._();
-  DspEngine._();
+
+  DspEngine._() {
+    _ch.setMethodCallHandler((call) async {
+      if (call.method == 'onTrackEnded') {
+        onTrackEnded?.call();
+      }
+    });
+  }
 
   static const _ch = MethodChannel('app/dsp');
+
+  // ОСЬ ЦЬОГО РЯДКА ЗАРАЗ НЕ ВИСТАЧАЄ:
+  VoidCallback? onTrackEnded;
 
   Future<void> load(String path) => _ch.invokeMethod('load', {'path': path});
   Future<void> play() => _ch.invokeMethod('play');
   Future<void> pause() => _ch.invokeMethod('pause');
   Future<void> seekTo(int ms) => _ch.invokeMethod('seekTo', {'ms': ms});
   Future<int> position() async => (await _ch.invokeMethod<int>('position')) ?? 0;
+  Future<int> duration() async => (await _ch.invokeMethod<int>('duration')) ?? 0;
 
   Future<void> apply(DspConfig config) => _ch.invokeMethod('setConfig', config.toMap());
 }

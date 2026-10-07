@@ -13,6 +13,85 @@ class EqualizerScreen extends StatelessWidget {
     return '${freq.toInt()}';
   }
 
+  void _showSavePresetDialog(BuildContext context, EqualizerController eq, SettingsController settings) {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: settings.surfaceColor,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(
+          settings.tr('save_preset'),
+          style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: TextStyle(color: settings.textColor),
+          decoration: InputDecoration(
+            hintText: settings.tr('preset_name_hint'),
+            hintStyle: TextStyle(color: settings.subTextColor),
+            filled: true,
+            fillColor: settings.backgroundColor,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(settings.tr('cancel'), style: TextStyle(color: settings.subTextColor)),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: settings.accentColor),
+            onPressed: () {
+              final name = controller.text.trim();
+              if (name.isNotEmpty) {
+                eq.saveCurrentAsCustom(name);
+                Navigator.pop(ctx);
+              }
+            },
+            child: Text(
+              settings.tr('save'),
+              style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDeletePresetDialog(BuildContext context, EqualizerController eq, SettingsController settings, String name) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: settings.surfaceColor,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(settings.tr('delete_preset'), style: TextStyle(color: settings.textColor)),
+        content: Text('"$name"', style: TextStyle(color: settings.subTextColor)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(settings.tr('cancel'), style: TextStyle(color: settings.subTextColor)),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () {
+              eq.deleteCustomPreset(name);
+              Navigator.pop(ctx);
+            },
+            child: Text(
+              settings.tr('delete_preset'),
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = SettingsController.instance;
@@ -35,7 +114,7 @@ class EqualizerScreen extends StatelessWidget {
                   )
                 : null,
             title: Text(
-              'DSP Studio Engine',
+              settings.tr('dsp_effects'),
               style: TextStyle(
                 color: settings.textColor,
                 fontFamily: 'sans-serif-rounded',
@@ -54,31 +133,63 @@ class EqualizerScreen extends StatelessWidget {
           body: ListView(
             padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
             children: [
+              // Рядок вибору та збереження пресетів
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
-                  children: eq.presets.keys.map((name) {
-                    final isSelected = eq.currentPresetName == name;
-                    return Padding(
+                  children: [
+                    Padding(
                       padding: const EdgeInsets.only(right: 8.0),
-                      child: ChoiceChip(
-                        label: Text(name),
-                        selected: isSelected,
-                        selectedColor: accent,
-                        backgroundColor: settings.surfaceColor,
-                        labelStyle: TextStyle(
-                          color: isSelected ? Colors.black : settings.textColor,
-                          fontWeight: FontWeight.bold,
-                          fontFamily: 'sans-serif-rounded',
+                      child: ActionChip(
+                        avatar: Icon(Icons.add_rounded, color: accent, size: 20),
+                        label: Text(
+                          settings.tr('save_preset'),
+                          style: TextStyle(
+                            color: settings.textColor,
+                            fontWeight: FontWeight.bold,
+                            fontFamily: 'sans-serif-rounded',
+                          ),
                         ),
-                        onSelected: (_) => eq.selectPreset(name),
+                        backgroundColor: settings.surfaceColor,
+                        onPressed: () => _showSavePresetDialog(context, eq, settings),
                       ),
-                    );
-                  }).toList(),
+                    ),
+                    ...eq.allPresetNames.map((name) {
+                      final isSelected = eq.currentPresetName == name;
+                      final isCustom = eq.customPresets.containsKey(name);
+
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 8.0),
+                        child: InputChip(
+                          label: Text(name),
+                          selected: isSelected,
+                          selectedColor: accent,
+                          backgroundColor: settings.surfaceColor,
+                          labelStyle: TextStyle(
+                            color: isSelected ? Colors.black : settings.textColor,
+                            fontWeight: FontWeight.bold,
+                            fontFamily: 'sans-serif-rounded',
+                          ),
+                          onSelected: (_) => eq.selectPreset(name),
+                          onDeleted: isCustom
+                              ? () => _showDeletePresetDialog(context, eq, settings, name)
+                              : null,
+                          deleteIcon: isCustom
+                              ? Icon(
+                                  Icons.close_rounded,
+                                  size: 16,
+                                  color: isSelected ? Colors.black87 : settings.subTextColor,
+                                )
+                              : null,
+                        ),
+                      );
+                    }),
+                  ],
                 ),
               ),
               const SizedBox(height: 16),
 
+              // 10-смуговий еквалайзер
               Container(
                 padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 8),
                 decoration: BoxDecoration(
@@ -97,7 +208,7 @@ class EqualizerScreen extends StatelessWidget {
                             child: Column(
                               children: [
                                 Text(
-                                  '${band.gainDb > 0 ? "+" : ""}${band.gainDb.toStringAsFixed(0)}',
+                                  '${band.gainDb > 0 ? "+" : ""}${band.gainDb.toStringAsFixed(1)}',
                                   style: TextStyle(
                                     color: settings.subTextColor,
                                     fontSize: 9,
@@ -146,6 +257,7 @@ class EqualizerScreen extends StatelessWidget {
               ),
               const SizedBox(height: 16),
 
+              // Блок DSP ефектів
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -154,11 +266,12 @@ class EqualizerScreen extends StatelessWidget {
                 ),
                 child: Column(
                   children: [
+                    // Ширина сцени (Stereo Width)
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          'Ширина сцени (Mid/Side)',
+                          settings.tr('stereo_width'),
                           style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold),
                         ),
                         Text(
@@ -169,7 +282,7 @@ class EqualizerScreen extends StatelessWidget {
                     ),
                     Slider(
                       value: eq.stereoWidth,
-                      min: 0.5,
+                      min: 0.0,
                       max: 2.0,
                       activeColor: accent,
                       inactiveColor: settings.backgroundColor,
@@ -177,11 +290,36 @@ class EqualizerScreen extends StatelessWidget {
                     ),
                     const Divider(height: 16),
 
+                    // Глибина кімнати (Reverb)
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          'Повітря & Блиск (Exciter)',
+                          settings.tr('reverb'),
+                          style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          '${(eq.reverbMix * 100).toInt()}%',
+                          style: TextStyle(color: accent, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                    Slider(
+                      value: eq.reverbMix,
+                      min: 0.0,
+                      max: 1.0,
+                      activeColor: accent,
+                      inactiveColor: settings.backgroundColor,
+                      onChanged: eq.isEnabled ? eq.setReverbMix : null,
+                    ),
+                    const Divider(height: 16),
+
+                    // Ексайтер (Exciter)
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          settings.tr('exciter'),
                           style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold),
                         ),
                         Text(
@@ -200,15 +338,16 @@ class EqualizerScreen extends StatelessWidget {
                     ),
                     const Divider(height: 16),
 
+                    // Ламповий драйв (Tube Drive)
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          'Лампове насичення (Drive)',
+                          settings.tr('tube_drive'),
                           style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold),
                         ),
                         Text(
-                          eq.tubeDrive > 0 ? '${eq.tubeDrive.toStringAsFixed(1)}x' : 'Вимк',
+                          eq.tubeDrive > 0 ? '${eq.tubeDrive.toStringAsFixed(1)}x' : '0',
                           style: TextStyle(color: accent, fontWeight: FontWeight.bold),
                         ),
                       ],
