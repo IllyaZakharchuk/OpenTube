@@ -1,7 +1,10 @@
+import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'models.dart';
+import 'settings_controller.dart';
 
 class PlayerScreen extends StatefulWidget {
   final ValueNotifier<Song?> songNotifier;
@@ -25,12 +28,17 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMixin {
   bool isPlaying = false;
   bool isShuffle = false;
   LoopMode loopMode = LoopMode.off;
   Duration duration = Duration.zero;
   Duration position = Duration.zero;
+
+  late final AnimationController _rotationController;
+  late final AnimationController _morphController;
+  late final AnimationController _beatController;
+  late final AnimationController _fluidController;
 
   @override
   void initState() {
@@ -39,9 +47,50 @@ class _PlayerScreenState extends State<PlayerScreen> {
     isShuffle = widget.audioPlayer.shuffleModeEnabled;
     loopMode = widget.audioPlayer.loopMode;
 
+    _rotationController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 26),
+    );
+
+    _morphController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+      value: isPlaying ? 1.0 : 0.0,
+    );
+
+    _beatController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2400),
+    );
+
+    _fluidController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 8),
+    );
+
+    if (isPlaying) {
+      _rotationController.repeat();
+      _beatController.repeat(reverse: true);
+      _fluidController.repeat();
+    }
+
     widget.audioPlayer.playerStateStream.listen((state) {
       if (!mounted) return;
-      setState(() => isPlaying = state.playing);
+      final playing = state.playing;
+      setState(() {
+        isPlaying = playing;
+        if (playing) {
+          _morphController.forward();
+          if (!_rotationController.isAnimating) _rotationController.repeat();
+          if (!_beatController.isAnimating) _beatController.repeat(reverse: true);
+          if (!_fluidController.isAnimating) _fluidController.repeat();
+        } else {
+          _morphController.reverse();
+          _rotationController.stop();
+          _beatController.stop();
+          _fluidController.stop();
+        }
+      });
     });
 
     widget.audioPlayer.durationStream.listen((d) {
@@ -65,6 +114,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     });
   }
 
+  @override
+  void dispose() {
+    _rotationController.dispose();
+    _morphController.dispose();
+    _beatController.dispose();
+    _fluidController.dispose();
+    super.dispose();
+  }
+
   String _formatDuration(Duration d) {
     String twoDigits(int n) => n.toString().padLeft(2, '0');
     final minutes = twoDigits(d.inMinutes.remainder(60));
@@ -72,183 +130,907 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return "$minutes:$seconds";
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<Song?>(
-      valueListenable: widget.songNotifier,
-      builder: (context, currentSong, child) {
-        if (currentSong == null) {
-          return const Scaffold(body: Center(child: Text('Немає активного треку')));
-        }
-        return Scaffold(
-          body: Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0xFF2E1705), Color(0xFF141414), Color(0xFF0D0D0D)],
-                stops: [0.0, 0.45, 1.0],
+  Widget _buildArtworkWidget(String? artworkPath, double size, Color accent, Color surfaceColor) {
+    if (artworkPath == null || artworkPath.isEmpty) {
+      return Container(
+        color: surfaceColor,
+        child: Icon(Icons.music_note_rounded, size: size * 0.4, color: accent),
+      );
+    }
+
+    if (artworkPath.startsWith('http')) {
+      return Image.network(
+        artworkPath,
+        fit: BoxFit.cover,
+        errorBuilder: (ctx, err, stack) => Container(
+          color: surfaceColor,
+          child: Icon(Icons.music_note_rounded, size: size * 0.4, color: accent),
+        ),
+      );
+    }
+
+    return Image.file(
+      File(artworkPath),
+      fit: BoxFit.cover,
+      errorBuilder: (ctx, err, stack) => Container(
+        color: surfaceColor,
+        child: Icon(Icons.music_note_rounded, size: size * 0.4, color: accent),
+      ),
+    );
+  }
+
+  void _showEditMetadataDialog(BuildContext context, Song currentSong) {
+    final titleController = TextEditingController(text: currentSong.title);
+    final artistController = TextEditingController(
+      text: (currentSong.artist == 'Локальний файл' || currentSong.artist == 'Невідомий виконавець')
+          ? ''
+          : currentSong.artist,
+    );
+    final settings = SettingsController.instance;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: settings.surfaceColor,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Text(
+            'Редагувати трек',
+            style: TextStyle(
+              fontFamily: 'sans-serif-rounded',
+              fontWeight: FontWeight.w800,
+              color: settings.textColor,
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleController,
+                style: TextStyle(color: settings.textColor, fontFamily: 'sans-serif-rounded'),
+                decoration: InputDecoration(
+                  labelText: 'Назва пісні',
+                  labelStyle: TextStyle(color: settings.subTextColor),
+                  enabledBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: settings.subTextColor.withOpacity(0.4)),
+                  ),
+                  focusedBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: settings.accentColor, width: 2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: artistController,
+                style: TextStyle(color: settings.textColor, fontFamily: 'sans-serif-rounded'),
+                decoration: InputDecoration(
+                  labelText: 'Виконавець',
+                  labelStyle: TextStyle(color: settings.subTextColor),
+                  enabledBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: settings.subTextColor.withOpacity(0.4)),
+                  ),
+                  focusedBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: settings.accentColor, width: 2),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(
+                'Скасувати',
+                style: TextStyle(color: settings.subTextColor, fontFamily: 'sans-serif-rounded'),
               ),
             ),
-            child: SafeArea(
-              child: Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.keyboard_arrow_down, size: 34, color: Colors.white70),
-                          onPressed: () => Navigator.pop(context),
-                        ),
-                        Text(
-                          AppLocale.tr('now_playing'),
-                          style: const TextStyle(fontSize: 13, letterSpacing: 2.0, fontWeight: FontWeight.w600, color: Colors.white60),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.download, size: 26, color: Colors.orangeAccent),
-                          onPressed: widget.onDownloadCurrent,
-                        ),
-                      ],
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: settings.accentColor,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: () {
+                final newTitle = titleController.text.trim();
+                final newArtist = artistController.text.trim();
+
+                if (newTitle.isNotEmpty) {
+                  final updatedSong = Song(
+                    title: newTitle,
+                    artist: newArtist.isNotEmpty ? newArtist : 'Невідомий виконавець',
+                    path: currentSong.path,
+                    artworkUrl: currentSong.artworkUrl,
+                    isOnline: currentSong.isOnline,
+                  );
+
+                  widget.songNotifier.value = null;
+                  widget.songNotifier.value = updatedSong;
+                }
+                Navigator.pop(ctx);
+              },
+              child: const Text(
+                'Зберегти',
+                style: TextStyle(
+                  color: Colors.black,
+                  fontFamily: 'sans-serif-rounded',
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = SettingsController.instance;
+    final accent = settings.accentColor;
+
+    return AnimatedBuilder(
+      animation: settings,
+      builder: (context, _) {
+        return ValueListenableBuilder<Song?>(
+          valueListenable: widget.songNotifier,
+          builder: (context, currentSong, child) {
+            if (currentSong == null) {
+              return Scaffold(
+                backgroundColor: settings.backgroundColor,
+                body: Center(
+                  child: Text(
+                    'Немає активного треку',
+                    style: TextStyle(
+                      fontFamily: 'sans-serif-rounded',
+                      fontWeight: FontWeight.bold,
+                      color: settings.textColor,
                     ),
                   ),
-                  const Spacer(),
-                  Center(
-                    child: Container(
-                      width: 290,
-                      height: 290,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(24),
-                        boxShadow: [
-                          BoxShadow(color: Colors.orangeAccent.withOpacity(0.18), blurRadius: 36, offset: const Offset(0, 14), spreadRadius: 2),
-                          BoxShadow(color: Colors.black.withOpacity(0.7), blurRadius: 20, offset: const Offset(0, 10)),
+                ),
+              );
+            }
+
+            final displayArtist = (currentSong.artist.isEmpty || currentSong.artist == 'Локальний файл')
+                ? 'Невідомий виконавець'
+                : currentSong.artist;
+
+            return Scaffold(
+              backgroundColor: settings.backgroundColor,
+              body: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onVerticalDragEnd: (details) {
+                  if (details.primaryVelocity != null && details.primaryVelocity! > 350) {
+                    Navigator.pop(context);
+                  }
+                },
+                child: Stack(
+                  children: [
+                    // 1. Повноекранний живий фон лава-лампи
+                    Positioned.fill(
+                      child: AnimatedBuilder(
+                        animation: Listenable.merge([_beatController, _fluidController, _morphController]),
+                        builder: (context, _) {
+                          final smoothBeat = Curves.easeInOutSine.transform(_beatController.value);
+
+                          return CustomPaint(
+                            painter: _FullscreenLavalampBackgroundPainter(
+                              baseBackgroundColor: settings.backgroundColor,
+                              accentColor: accent,
+                              beatProgress: smoothBeat,
+                              fluidProgress: _fluidController.value,
+                              activeProgress: _morphController.value,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+
+                    // 2. Інтерфейс плеєра
+                    SafeArea(
+                      child: Column(
+                        children: [
+                          // Верхній бар
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                IconButton(
+                                  icon: Icon(Icons.keyboard_arrow_down_rounded, size: 36, color: settings.textColor.withOpacity(0.75)),
+                                  onPressed: () => Navigator.pop(context),
+                                ),
+                                if (currentSong.isOnline)
+                                  IconButton(
+                                    icon: Icon(Icons.download_rounded, size: 28, color: accent),
+                                    onPressed: widget.onDownloadCurrent,
+                                  )
+                                else
+                                  const SizedBox(width: 48),
+                              ],
+                            ),
+                          ),
+
+                          // Блок обкладинки
+                          Expanded(
+                            child: Center(
+                              child: LayoutBuilder(
+                                builder: (context, boxConstraints) {
+                                  final imgSize = (boxConstraints.maxHeight * 0.88).clamp(180.0, 260.0);
+                                  final glowBoxSize = imgSize * 1.95;
+
+                                  return SizedBox(
+                                    width: glowBoxSize,
+                                    height: glowBoxSize,
+                                    child: Stack(
+                                      alignment: Alignment.center,
+                                      clipBehavior: Clip.none,
+                                      children: [
+                                        AnimatedBuilder(
+                                          animation: Listenable.merge([_beatController, _fluidController, _morphController]),
+                                          builder: (context, _) {
+                                            final smoothBeat = Curves.easeInOutSine.transform(_beatController.value);
+
+                                            return CustomPaint(
+                                              size: Size(glowBoxSize, glowBoxSize),
+                                              painter: _LavalampGlowPainter(
+                                                accentColor: accent,
+                                                beatProgress: smoothBeat,
+                                                fluidProgress: _fluidController.value,
+                                                activeProgress: _morphController.value,
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                        AnimatedSwitcher(
+                                          duration: const Duration(milliseconds: 380),
+                                          switchInCurve: Curves.easeOutCubic,
+                                          switchOutCurve: Curves.easeInCubic,
+                                          transitionBuilder: (child, animation) {
+                                            return FadeTransition(
+                                              opacity: animation,
+                                              child: ScaleTransition(
+                                                scale: Tween<double>(begin: 0.92, end: 1.0).animate(animation),
+                                                child: child,
+                                              ),
+                                            );
+                                          },
+                                          child: Container(
+                                            key: ValueKey<String>('cover_${currentSong.title}_${currentSong.artist}'),
+                                            width: imgSize,
+                                            height: imgSize,
+                                            decoration: BoxDecoration(
+                                              borderRadius: BorderRadius.circular(24),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: Colors.black.withOpacity(0.65),
+                                                  blurRadius: 26,
+                                                  offset: const Offset(0, 12),
+                                                ),
+                                              ],
+                                            ),
+                                            child: ClipRRect(
+                                              borderRadius: BorderRadius.circular(24),
+                                              child: _buildArtworkWidget(
+                                                currentSong.artworkUrl,
+                                                imgSize,
+                                                accent,
+                                                settings.surfaceColor,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+
+                          // Текстовий блок
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 28.0, vertical: 8.0),
+                            child: GestureDetector(
+                              onLongPress: () => _showEditMetadataDialog(context, currentSong),
+                              child: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 320),
+                                switchInCurve: Curves.easeOutCubic,
+                                switchOutCurve: Curves.easeInCubic,
+                                transitionBuilder: (child, animation) {
+                                  return FadeTransition(
+                                    opacity: animation,
+                                    child: SlideTransition(
+                                      position: Tween<Offset>(
+                                        begin: const Offset(0.0, 0.18),
+                                        end: Offset.zero,
+                                      ).animate(animation),
+                                      child: child,
+                                    ),
+                                  );
+                                },
+                                child: Column(
+                                  key: ValueKey<String>('info_${currentSong.title}_$displayArtist'),
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      currentSong.title,
+                                      style: TextStyle(
+                                        fontFamily: 'sans-serif-rounded',
+                                        fontSize: 24,
+                                        fontWeight: FontWeight.w900,
+                                        letterSpacing: -0.2,
+                                        color: settings.textColor,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      displayArtist,
+                                      style: TextStyle(
+                                        fontFamily: 'sans-serif-rounded',
+                                        fontSize: 15,
+                                        color: settings.subTextColor,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+
+                          // Хвиля з кнопками керування
+                          SizedBox(
+                            height: 220,
+                            child: LayoutBuilder(
+                              builder: (context, constraints) {
+                                return Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    AnimatedBuilder(
+                                      animation: _morphController,
+                                      builder: (context, _) {
+                                        final lineProgress = CurvedAnimation(
+                                          parent: _morphController,
+                                          curve: Curves.easeInOutCubic,
+                                        ).value;
+
+                                        return OverflowBox(
+                                          maxWidth: constraints.maxWidth + 48,
+                                          minWidth: constraints.maxWidth + 48,
+                                          child: CenteredWaveformScroller(
+                                            duration: duration,
+                                            position: position,
+                                            lineGrowProgress: lineProgress,
+                                            activeColor: accent,
+                                            inactiveColor: settings.subTextColor.withOpacity(0.20),
+                                            onSeek: (newPos) async {
+                                              await widget.audioPlayer.seek(newPos);
+                                            },
+                                          ),
+                                        );
+                                      },
+                                    ),
+
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        crossAxisAlignment: CrossAxisAlignment.center,
+                                        children: [
+                                          IconButton(
+                                            icon: Icon(
+                                              Icons.shuffle_rounded,
+                                              color: isShuffle ? accent : settings.subTextColor,
+                                              size: 28,
+                                            ),
+                                            onPressed: () async => await widget.audioPlayer.setShuffleModeEnabled(!isShuffle),
+                                          ),
+                                          IconButton(
+                                            iconSize: 48,
+                                            icon: Icon(Icons.skip_previous_rounded, color: settings.textColor),
+                                            onPressed: widget.onPrev,
+                                          ),
+                                          GestureDetector(
+                                            onTap: widget.onPlayPause,
+                                            child: SizedBox(
+                                              width: 96,
+                                              height: 96,
+                                              child: Stack(
+                                                alignment: Alignment.center,
+                                                children: [
+                                                  AnimatedBuilder(
+                                                    animation: Listenable.merge([_rotationController, _morphController]),
+                                                    builder: (context, child) {
+                                                      final curvedMorph = CurvedAnimation(
+                                                        parent: _morphController,
+                                                        curve: Curves.easeInOutCubic,
+                                                      ).value;
+
+                                                      return Transform.rotate(
+                                                        angle: _rotationController.value * 2 * math.pi,
+                                                        child: CustomPaint(
+                                                          size: const Size(96, 96),
+                                                          painter: _ScallopButtonPainter(
+                                                            morphProgress: curvedMorph,
+                                                            color: accent,
+                                                            shadowColor: accent.withOpacity(0.55),
+                                                          ),
+                                                        ),
+                                                      );
+                                                    },
+                                                  ),
+                                                  Icon(
+                                                    isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                                                    size: 48,
+                                                    color: Colors.black,
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                          IconButton(
+                                            iconSize: 48,
+                                            icon: Icon(Icons.skip_next_rounded, color: settings.textColor),
+                                            onPressed: widget.onNext,
+                                          ),
+                                          IconButton(
+                                            icon: Icon(
+                                              loopMode == LoopMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
+                                              color: loopMode != LoopMode.off ? accent : settings.subTextColor,
+                                              size: 28,
+                                            ),
+                                            onPressed: () async {
+                                              final next = loopMode == LoopMode.off ? LoopMode.one : LoopMode.off;
+                                              await widget.audioPlayer.setLoopMode(next);
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
+                          ),
+
+                          // Таймкоди
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  _formatDuration(position),
+                                  style: TextStyle(
+                                    fontFamily: 'sans-serif-rounded',
+                                    color: settings.subTextColor,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w800,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                                Text(
+                                  _formatDuration(duration),
+                                  style: TextStyle(
+                                    fontFamily: 'sans-serif-rounded',
+                                    color: settings.subTextColor,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w800,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 12),
                         ],
                       ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(24),
-                        child: currentSong.artworkUrl != null && currentSong.artworkUrl!.isNotEmpty
-                            ? Image.network(
-                                currentSong.artworkUrl!,
-                                fit: BoxFit.cover,
-                                errorBuilder: (ctx, err, stack) => Container(color: const Color(0xFF222222), child: const Icon(Icons.music_note, size: 110, color: Colors.orangeAccent)),
-                              )
-                            : Container(color: const Color(0xFF222222), child: const Icon(Icons.music_note, size: 110, color: Colors.orangeAccent)),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _FullscreenLavalampBackgroundPainter extends CustomPainter {
+  final Color baseBackgroundColor;
+  final Color accentColor;
+  final double beatProgress;
+  final double fluidProgress;
+  final double activeProgress;
+
+  _FullscreenLavalampBackgroundPainter({
+    required this.baseBackgroundColor,
+    required this.accentColor,
+    required this.beatProgress,
+    required this.fluidProgress,
+    required this.activeProgress,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+
+    final bgPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          baseBackgroundColor,
+          baseBackgroundColor.withOpacity(0.96),
+          baseBackgroundColor,
+        ],
+      ).createShader(rect);
+    canvas.drawRect(rect, bgPaint);
+
+    final hsl = HSLColor.fromColor(accentColor);
+    final secondary = hsl.withHue((hsl.hue + 32.0) % 360.0).toColor();
+
+    final t = fluidProgress * 2 * math.pi;
+    final beatMul = 1.0 + (0.12 * beatProgress * activeProgress);
+
+    final topCenter = Offset(
+      size.width * 0.5 + math.sin(t) * (size.width * 0.22),
+      size.height * 0.18 + math.cos(t * 0.8) * 35.0,
+    );
+    final topPaint = Paint()
+      ..color = accentColor.withOpacity(0.15 + 0.08 * activeProgress + 0.04 * beatProgress)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 110.0);
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: topCenter,
+        width: size.width * 1.1 * beatMul,
+        height: size.height * 0.42 * beatMul,
+      ),
+      topPaint,
+    );
+
+    if (activeProgress > 0.02) {
+      final midCenter = Offset(
+        size.width * 0.5 - math.cos(t * 1.1) * (size.width * 0.25),
+        size.height * 0.65 + math.sin(t) * 45.0,
+      );
+      final midPaint = Paint()
+        ..color = secondary.withOpacity((0.12 + 0.06 * beatProgress) * activeProgress)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 125.0);
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: midCenter,
+          width: size.width * 1.15 * beatMul,
+          height: size.height * 0.48 * beatMul,
+        ),
+        midPaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _FullscreenLavalampBackgroundPainter oldDelegate) {
+    return oldDelegate.beatProgress != beatProgress ||
+        oldDelegate.fluidProgress != fluidProgress ||
+        oldDelegate.activeProgress != activeProgress ||
+        oldDelegate.accentColor != accentColor ||
+        oldDelegate.baseBackgroundColor != baseBackgroundColor;
+  }
+}
+
+class _LavalampGlowPainter extends CustomPainter {
+  final Color accentColor;
+  final double beatProgress;
+  final double fluidProgress;
+  final double activeProgress;
+
+  _LavalampGlowPainter({
+    required this.accentColor,
+    required this.beatProgress,
+    required this.fluidProgress,
+    required this.activeProgress,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+
+    if (activeProgress <= 0.05) {
+      final paint = Paint()
+        ..color = accentColor.withOpacity(0.24)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 54.0);
+      canvas.drawCircle(center, size.width * 0.32, paint);
+      return;
+    }
+
+    final hsl = HSLColor.fromColor(accentColor);
+    final secondaryColor = hsl
+        .withHue((hsl.hue + 28.0) % 360.0)
+        .withLightness((hsl.lightness * 1.1).clamp(0.0, 1.0))
+        .toColor();
+
+    final tertiaryColor = hsl
+        .withHue((hsl.hue - 26.0 + 360.0) % 360.0)
+        .toColor();
+
+    final t = fluidProgress * 2 * math.pi;
+    final beatScale = 1.0 + (0.22 * beatProgress * activeProgress);
+
+    final baseRadius = (size.width * 0.38) * beatScale;
+    final basePaint = Paint()
+      ..color = accentColor.withOpacity((0.36 + 0.16 * beatProgress) * activeProgress)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 72.0);
+    canvas.drawCircle(center, baseRadius, basePaint);
+
+    final offset1 = Offset(
+      center.dx + math.cos(t) * 44.0,
+      center.dy + math.sin(t * 1.25) * 36.0,
+    );
+    final blob1Paint = Paint()
+      ..color = secondaryColor.withOpacity((0.42 + 0.12 * math.sin(t)) * activeProgress)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 65.0);
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: offset1,
+        width: (size.width * 0.70 + 26.0 * math.cos(t * 2)) * beatScale,
+        height: (size.height * 0.58 + 30.0 * math.sin(t)) * beatScale,
+      ),
+      blob1Paint,
+    );
+
+    final offset2 = Offset(
+      center.dx + math.sin(t * 0.95) * -46.0,
+      center.dy + math.cos(t * 1.15) * -38.0,
+    );
+    final blob2Paint = Paint()
+      ..color = tertiaryColor.withOpacity((0.38 + 0.10 * math.cos(t * 1.4)) * activeProgress)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 68.0);
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: offset2,
+        width: (size.width * 0.62 + 24.0 * math.sin(t)) * beatScale,
+        height: (size.height * 0.68 + 26.0 * math.cos(t * 0.8)) * beatScale,
+      ),
+      blob2Paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _LavalampGlowPainter oldDelegate) {
+    return oldDelegate.beatProgress != beatProgress ||
+        oldDelegate.fluidProgress != fluidProgress ||
+        oldDelegate.activeProgress != activeProgress ||
+        oldDelegate.accentColor != accentColor;
+  }
+}
+
+class _ScallopButtonPainter extends CustomPainter {
+  final double morphProgress;
+  final Color color;
+  final Color shadowColor;
+
+  _ScallopButtonPainter({
+    required this.morphProgress,
+    required this.color,
+    required this.shadowColor,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final baseRadius = (size.width / 2) - 9.0;
+
+    final shadowPaint = Paint()
+      ..color = shadowColor
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18.0);
+
+    final fillPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+
+    final path = Path();
+    const int petals = 12;
+    final double maxAmplitude = 5.2 * morphProgress;
+    const int steps = petals * 16;
+
+    for (int i = 0; i <= steps; i++) {
+      final double theta = (i / steps) * 2 * math.pi;
+      final waveOut = (1.0 + math.cos(petals * theta)) / 2.0;
+      final double r = baseRadius + maxAmplitude * waveOut;
+
+      final double x = center.dx + r * math.cos(theta);
+      final double y = center.dy + r * math.sin(theta);
+
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    path.close();
+
+    canvas.drawPath(path, shadowPaint);
+    canvas.drawPath(path, fillPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScallopButtonPainter oldDelegate) {
+    return oldDelegate.morphProgress != morphProgress ||
+        oldDelegate.color != color ||
+        oldDelegate.shadowColor != shadowColor;
+  }
+}
+
+class CenteredWaveformScroller extends StatelessWidget {
+  final Duration duration;
+  final Duration position;
+  final double lineGrowProgress;
+  final Color activeColor;
+  final Color inactiveColor;
+  final ValueChanged<Duration> onSeek;
+
+  const CenteredWaveformScroller({
+    super.key,
+    required this.duration,
+    required this.position,
+    required this.lineGrowProgress,
+    required this.activeColor,
+    required this.inactiveColor,
+    required this.onSeek,
+  });
+
+  void _handleDrag(DragUpdateDetails details, double totalWidth) {
+    if (duration.inMilliseconds <= 0 || totalWidth <= 0) return;
+    final double deltaMs = (-details.delta.dx / (totalWidth * 0.9)) * duration.inMilliseconds;
+    final int newMs = (position.inMilliseconds + deltaMs).clamp(0, duration.inMilliseconds).toInt();
+    onSeek(Duration(milliseconds: newMs));
+  }
+
+  void _handleTap(TapDownDetails details, double totalWidth) {
+    if (duration.inMilliseconds <= 0 || totalWidth <= 0) return;
+    final double center = totalWidth / 2;
+    final double offsetFromCenter = details.localPosition.dx - center;
+    final double deltaMs = (offsetFromCenter / (totalWidth * 0.9)) * duration.inMilliseconds;
+    final int newMs = (position.inMilliseconds + deltaMs).clamp(0, duration.inMilliseconds).toInt();
+    onSeek(Duration(milliseconds: newMs));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = duration.inMilliseconds > 0
+        ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0)
+        : 0.0;
+
+    const double maxLineHeight = 230.0;
+    final double currentLineHeight = maxLineHeight * lineGrowProgress;
+
+    final hsl = HSLColor.fromColor(activeColor);
+    final edgeSoftColor = hsl
+        .withLightness((hsl.lightness * 0.80).clamp(0.0, 1.0))
+        .toColor()
+        .withOpacity(0.85 * lineGrowProgress);
+
+    final centerBrightColor = activeColor.withOpacity(0.95 * lineGrowProgress);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: (d) => _handleTap(d, constraints.maxWidth),
+          onHorizontalDragUpdate: (d) => _handleDrag(d, constraints.maxWidth),
+          child: SizedBox(
+            height: maxLineHeight,
+            width: constraints.maxWidth,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CustomPaint(
+                  size: Size(constraints.maxWidth, 220),
+                  painter: _InfiniteCenteredWaveformPainter(
+                    progress: progress,
+                    activeColor: activeColor.withOpacity(0.38),
+                    inactiveColor: inactiveColor,
+                  ),
+                ),
+                if (currentLineHeight > 4.0)
+                  IgnorePointer(
+                    child: Container(
+                      width: 12.0,
+                      height: currentLineHeight,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(6.0),
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            edgeSoftColor,
+                            centerBrightColor,
+                            centerBrightColor,
+                            edgeSoftColor,
+                          ],
+                          stops: const [0.0, 0.28, 0.72, 1.0],
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: activeColor.withOpacity(0.60 * lineGrowProgress),
+                            blurRadius: 16,
+                            spreadRadius: 2,
+                          ),
+                        ],
                       ),
                     ),
                   ),
-                  const Spacer(),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32.0),
-                    child: Column(
-                      children: [
-                        Text(
-                          currentSong.title,
-                          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
-                          textAlign: TextAlign.center,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          currentSong.artist,
-                          style: const TextStyle(fontSize: 16, color: Colors.white60),
-                          textAlign: TextAlign.center,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                    child: Column(
-                      children: [
-                        SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            activeTrackColor: Colors.orangeAccent,
-                            inactiveTrackColor: Colors.white12,
-                            thumbColor: Colors.orangeAccent,
-                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6.0),
-                            trackHeight: 4.0,
-                          ),
-                          child: Slider(
-                            min: 0,
-                            max: duration.inSeconds.toDouble() > 0 ? duration.inSeconds.toDouble() : 1.0,
-                            value: position.inSeconds.toDouble().clamp(0.0, duration.inSeconds.toDouble() > 0 ? duration.inSeconds.toDouble() : 1.0),
-                            onChanged: (val) async {
-                              await widget.audioPlayer.seek(Duration(seconds: val.toInt()));
-                            },
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(_formatDuration(position), style: const TextStyle(color: Colors.white38, fontSize: 12, fontFeatures: [FontFeature.tabularFigures()])),
-                              Text(_formatDuration(duration), style: const TextStyle(color: Colors.white38, fontSize: 12, fontFeatures: [FontFeature.tabularFigures()])),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        IconButton(
-                          icon: Icon(Icons.shuffle, color: isShuffle ? Colors.orangeAccent : Colors.white38, size: 24),
-                          onPressed: () async => await widget.audioPlayer.setShuffleModeEnabled(!isShuffle),
-                        ),
-                        IconButton(
-                          iconSize: 42,
-                          icon: const Icon(Icons.skip_previous, color: Colors.white),
-                          onPressed: widget.onPrev,
-                        ),
-                        Container(
-                          width: 72,
-                          height: 72,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.orangeAccent,
-                            boxShadow: [
-                              BoxShadow(color: Colors.orangeAccent.withOpacity(0.4), blurRadius: 18, offset: const Offset(0, 6)),
-                            ],
-                          ),
-                          child: IconButton(
-                            iconSize: 40,
-                            color: Colors.black,
-                            icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
-                            onPressed: widget.onPlayPause,
-                          ),
-                        ),
-                        IconButton(
-                          iconSize: 42,
-                          icon: const Icon(Icons.skip_next, color: Colors.white),
-                          onPressed: widget.onNext,
-                        ),
-                        IconButton(
-                          icon: Icon(loopMode == LoopMode.one ? Icons.repeat_one : Icons.repeat, color: loopMode != LoopMode.off ? Colors.orangeAccent : Colors.white38, size: 24),
-                          onPressed: () async {
-                            final next = loopMode == LoopMode.off ? LoopMode.one : LoopMode.off;
-                            await widget.audioPlayer.setLoopMode(next);
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                ],
-              ),
+              ],
             ),
           ),
         );
       },
     );
+  }
+}
+
+class _InfiniteCenteredWaveformPainter extends CustomPainter {
+  final double progress;
+  final Color activeColor;
+  final Color inactiveColor;
+
+  _InfiniteCenteredWaveformPainter({
+    required this.progress,
+    required this.activeColor,
+    required this.inactiveColor,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const int totalBands = 46;
+    const double barWidth = 10.5;
+    const double barSpacing = 6.5;
+    const double unitStep = barWidth + barSpacing;
+
+    final double centerX = size.width / 2;
+    final double scrollOffset = progress * (totalBands * unitStep);
+
+    final activePaint = Paint()
+      ..color = activeColor
+      ..style = PaintingStyle.fill;
+
+    final inactivePaint = Paint()
+      ..color = inactiveColor
+      ..style = PaintingStyle.fill;
+
+    for (int i = 0; i < totalBands; i++) {
+      final double barCenterOriginal = i * unitStep;
+      final double x = centerX + (barCenterOriginal - scrollOffset);
+
+      if (x < -unitStep || x > size.width + unitStep) continue;
+
+      final double normalizedHeight = (0.24 +
+              0.54 * math.sin(i * 0.38).abs() +
+              0.22 * math.cos(i * 0.82).abs())
+          .clamp(0.20, 1.0);
+
+      final double currentBarHeight = size.height * normalizedHeight;
+      final double y = (size.height - currentBarHeight) / 2;
+
+      final rect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(x - (barWidth / 2), y, barWidth, currentBarHeight),
+        const Radius.circular(5.5),
+      );
+
+      canvas.drawRRect(rect, x <= centerX ? activePaint : inactivePaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _InfiniteCenteredWaveformPainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.activeColor != activeColor ||
+        oldDelegate.inactiveColor != inactiveColor;
   }
 }

@@ -1,9 +1,7 @@
-import 'language_screen.dart';
-import 'theme_settings_screen.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'settings_controller.dart';
+import 'package:audiotags/audiotags.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:audio_service/audio_service.dart';
@@ -11,6 +9,9 @@ import 'package:just_audio/just_audio.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
+import 'language_screen.dart';
+import 'theme_settings_screen.dart';
+import 'settings_controller.dart';
 import 'models.dart';
 import 'audio_handler.dart';
 import 'player_screen.dart';
@@ -50,11 +51,11 @@ class OpenTubeApp extends StatelessWidget {
               primary: settings.accentColor,
             ),
             progressIndicatorTheme: ProgressIndicatorThemeData(
-            color: settings.accentColor,
+              color: settings.accentColor,
             ),
             cardTheme: CardTheme(
-              color: isLight 
-                  ? Colors.black.withOpacity(0.04) 
+              color: isLight
+                  ? Colors.black.withOpacity(0.04)
                   : Colors.white.withOpacity(0.05),
               elevation: 0,
               shape: RoundedRectangleBorder(
@@ -62,7 +63,7 @@ class OpenTubeApp extends StatelessWidget {
               ),
             ),
           ),
-          home: const MainContainerScreen(), // або твій кореневий екран, що був тут раніше
+          home: const MainContainerScreen(),
         );
       },
     );
@@ -77,7 +78,7 @@ class MainContainerScreen extends StatefulWidget {
 }
 
 class _MainContainerScreenState extends State<MainContainerScreen> {
-  int _currentIndex = 2; // Відкривати "Інтернет"
+  int _currentIndex = 2; // За замовчуванням відкривати вкладку "Інтернет"
   List<Song> librarySongs = [];
   List<CustomPlaylist> userPlaylists = [];
   bool isLoadingLibrary = true;
@@ -119,9 +120,11 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
       userPlaylists = decoded.map((item) => CustomPlaylist.fromJson(item)).toList();
     }
 
-    setState(() {
-      isLoadingLibrary = false;
-    });
+    if (mounted) {
+      setState(() {
+        isLoadingLibrary = false;
+      });
+    }
   }
 
   Future<void> _saveLibrary() async {
@@ -136,6 +139,61 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
     await prefs.setString('user_playlists', encoded);
   }
 
+  Future<Song> _parseLocalAudioFile(String filePath, String defaultName) async {
+    String title = '';
+    String artist = '';
+    String? localCoverPath;
+
+    try {
+      final Tag? tag = await AudioTags.read(filePath);
+      if (tag != null) {
+        if (tag.trackArtist != null && tag.trackArtist!.trim().isNotEmpty) {
+          artist = tag.trackArtist!.trim();
+        }
+        if (tag.title != null && tag.title!.trim().isNotEmpty) {
+          title = tag.title!.trim();
+        }
+
+        if (tag.pictures.isNotEmpty) {
+          final pictureBytes = tag.pictures.first.bytes;
+          final dir = await getApplicationDocumentsDirectory();
+          final coversDir = Directory('${dir.path}/covers');
+          if (!await coversDir.exists()) {
+            await coversDir.create(recursive: true);
+          }
+
+          final hash = filePath.hashCode.abs();
+          final coverFile = File('${coversDir.path}/cover_$hash.jpg');
+          await coverFile.writeAsBytes(pictureBytes);
+          localCoverPath = coverFile.path;
+        }
+      }
+    } catch (e) {
+      debugPrint('Tag read error for $filePath: $e');
+    }
+
+    final rawName = defaultName.replaceAll(RegExp(r'\.[^\/$.?#]+$'), '').trim();
+
+    if (title.isEmpty || artist.isEmpty) {
+      if (rawName.contains(' - ')) {
+        final parts = rawName.split(' - ');
+        if (artist.isEmpty) artist = parts[0].trim();
+        if (title.isEmpty) title = parts.sublist(1).join(' - ').trim();
+      } else {
+        if (title.isEmpty) title = rawName;
+        if (artist.isEmpty) artist = 'Невідомий виконавець';
+      }
+    }
+
+    return Song(
+      title: title,
+      path: filePath,
+      artist: artist,
+      artworkUrl: localCoverPath,
+      isOnline: false,
+    );
+  }
+
   Future<void> _pickAudioFiles() async {
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -143,23 +201,164 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         allowMultiple: true,
       );
       if (result != null && result.files.isNotEmpty) {
-        setState(() {
-          for (var file in result.files) {
-            if (file.path != null) {
-              librarySongs.add(Song(
-                title: file.name.replaceAll(RegExp(r'\.[^\/$.?#]+$'), ''),
-                path: file.path!,
-                artist: AppLocale.tr('local_track_artist'),
-                isOnline: false,
-              ));
-            }
+        final List<Song> parsedSongs = [];
+
+        for (var file in result.files) {
+          if (file.path != null) {
+            final song = await _parseLocalAudioFile(file.path!, file.name);
+            parsedSongs.add(song);
           }
+        }
+
+        setState(() {
+          librarySongs.addAll(parsedSongs);
         });
         await _saveLibrary();
       }
     } catch (e) {
       debugPrint('Pick file error: $e');
     }
+  }
+
+  void _showLibraryTrackMenu(Song song, int index) {
+    final settings = SettingsController.instance;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.symmetric(vertical: 20.0, horizontal: 16.0),
+        decoration: BoxDecoration(
+          color: settings.surfaceColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.4),
+              blurRadius: 20,
+              offset: const Offset(0, -4),
+            ),
+          ],
+        ),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: settings.subTextColor.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Container(
+                      width: 46,
+                      height: 46,
+                      color: settings.backgroundColor,
+                      child: () {
+                        final art = song.artworkUrl;
+                        if (art == null || art.isEmpty) {
+                          return Icon(Icons.music_note, color: settings.accentColor);
+                        }
+                        if (art.startsWith('http')) {
+                          return Image.network(art, fit: BoxFit.cover);
+                        }
+                        return Image.file(File(art), fit: BoxFit.cover);
+                      }(),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          song.title,
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                            color: settings.textColor,
+                            fontFamily: 'sans-serif-rounded',
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          song.artist,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: settings.subTextColor,
+                            fontFamily: 'sans-serif-rounded',
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Divider(height: 1, color: settings.textColor.withOpacity(0.08)),
+              const SizedBox(height: 8),
+              ListTile(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: settings.accentColor.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(Icons.playlist_add_rounded, color: settings.accentColor),
+                ),
+                title: Text(
+                  AppLocale.tr('add_to_playlist'),
+                  style: TextStyle(
+                    color: settings.textColor,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'sans-serif-rounded',
+                  ),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showAddToPlaylistDialog(song);
+                },
+              ),
+              ListTile(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                ),
+                title: const Text(
+                  'Видалити з медіатеки',
+                  style: TextStyle(
+                    color: Colors.redAccent,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'sans-serif-rounded',
+                  ),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _deleteLibrarySong(index);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _downloadSongToLibrary(Song song) async {
@@ -311,7 +510,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
                 });
                 await _savePlaylists();
               }
-              Navigator.pop(ctx);
+              if (ctx.mounted) Navigator.pop(ctx);
             },
             child: Text(AppLocale.tr('create'), style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
           ),
@@ -352,12 +551,12 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
                     return ListTile(
                       title: Text(pl.name, style: const TextStyle(color: Colors.white)),
                       trailing: const Icon(Icons.add, color: Colors.orangeAccent),
-                      onTap: () async {
+                      onTap: () {
+                        Navigator.pop(ctx);
                         setState(() {
                           pl.songs.add(song);
                         });
-                        await _savePlaylists();
-                        Navigator.pop(ctx);
+                        _savePlaylists();
                       },
                     );
                   },
@@ -390,21 +589,16 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
     await customHandler.updateMetadata(song.title, song.artist, song.artworkUrl);
 
     try {
-      // 1. Повністю зупиняємо попередній трек
       await customHandler.player.stop();
 
       if (song.isOnline) {
         debugPrint('--> [Player] Завантаження стріму: $finalUrl');
-        
-        // 2. Встановлюємо URL (тут відбувається очікування завантаження з сервера)
         await customHandler.player.setUrl(
           finalUrl,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36',
           },
         );
-        
-        // 3. Скидаємо позицію СТРОГО на початок треку (0:00)
         await customHandler.player.seek(Duration.zero);
       } else {
         debugPrint('--> [Player] Локальний файл: $finalUrl');
@@ -412,7 +606,6 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         await customHandler.player.seek(Duration.zero);
       }
 
-      // 4. Запускаємо відтворення тільки зараз
       await audioHandler.play();
     } catch (e) {
       debugPrint('--> [Player Playback Error]: $e');
@@ -481,6 +674,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         onDeleteSong: _deleteLibrarySong,
         onAddToPlaylist: _showAddToPlaylistDialog,
         onDeletePlaylist: _deletePlaylist,
+        onShowSongMenu: _showLibraryTrackMenu,
         onOpenPlaylist: (playlist) {
           Navigator.push(
             context,
@@ -515,6 +709,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
       SearchTab(
         librarySongs: librarySongs,
         onSelectSong: (songs, index) => _playSong(songs, index),
+        onShowSongMenu: _showLibraryTrackMenu,
       ),
       DiscoverTab(
         onPlaySong: (songs, index) => _playSong(songs, index),
@@ -733,29 +928,29 @@ class _DiscoverTabState extends State<DiscoverTab> {
             ),
             const SizedBox(height: 24),
             Text(
-  AppLocale.tr('you_might_like'),
-  style: TextStyle(
-    fontSize: 18,
-    fontWeight: FontWeight.bold,
-    color: SettingsController.instance.textColor,
-  ),
-),
-const SizedBox(height: 12),
-_isLoadingContent
-    ? Center(
-        child: CircularProgressIndicator(
-          color: SettingsController.instance.accentColor,
-        ),
-      )
-    : ListView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        itemCount: _recommendedTracks.length,
-        itemBuilder: (context, index) {
-          final song = _recommendedTracks[index];
-          return _buildTrackTile(song, _recommendedTracks, index);
-        },
-      ),
+              AppLocale.tr('you_might_like'),
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: SettingsController.instance.textColor,
+              ),
+            ),
+            const SizedBox(height: 12),
+            _isLoadingContent
+                ? Center(
+                    child: CircularProgressIndicator(
+                      color: SettingsController.instance.accentColor,
+                    ),
+                  )
+                : ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _recommendedTracks.length,
+                    itemBuilder: (context, index) {
+                      final song = _recommendedTracks[index];
+                      return _buildTrackTile(song, _recommendedTracks, index);
+                    },
+                  ),
           ],
         ],
       ),
@@ -763,78 +958,78 @@ _isLoadingContent
   }
 
   Widget _buildTrackTile(Song song, List<Song> queue, int index) {
-  final settings = SettingsController.instance;
+    final settings = SettingsController.instance;
 
-  return Container(
-    margin: const EdgeInsets.symmetric(vertical: 4),
-    decoration: BoxDecoration(
-      color: settings.surfaceColor,
-      borderRadius: BorderRadius.circular(16),
-    ),
-    child: ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      leading: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          width: 48,
-          height: 48,
-          color: settings.bgTheme == BgTheme.white
-              ? settings.accentColor.withOpacity(0.12)
-              : const Color(0xFF242424),
-          child: song.artworkUrl != null && song.artworkUrl!.isNotEmpty
-              ? Image.network(
-                  song.artworkUrl!,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Icon(
-                    Icons.music_note,
-                    color: settings.accentColor,
-                  ),
-                )
-              : Icon(Icons.music_note, color: settings.accentColor),
-        ),
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      decoration: BoxDecoration(
+        color: settings.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
       ),
-      title: Text(
-        song.title,
-        style: TextStyle(
-          fontWeight: FontWeight.bold,
-          fontSize: 14,
-          color: settings.textColor,
-        ),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text(
-        song.artist,
-        style: TextStyle(
-          color: settings.subTextColor,
-          fontSize: 12,
-        ),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            decoration: BoxDecoration(
-              color: settings.accentColor,
-              shape: BoxShape.circle,
-            ),
-            child: IconButton(
-              iconSize: 22,
-              icon: const Icon(Icons.play_arrow, color: Colors.black),
-              onPressed: () => widget.onPlaySong(queue, index),
-            ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        leading: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            width: 48,
+            height: 48,
+            color: settings.bgTheme == BgTheme.white
+                ? settings.accentColor.withOpacity(0.12)
+                : const Color(0xFF242424),
+            child: song.artworkUrl != null && song.artworkUrl!.isNotEmpty
+                ? Image.network(
+                    song.artworkUrl!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Icon(
+                      Icons.music_note,
+                      color: settings.accentColor,
+                    ),
+                  )
+                : Icon(Icons.music_note, color: settings.accentColor),
           ),
-          IconButton(
-            icon: Icon(Icons.more_vert, color: settings.subTextColor),
-            onPressed: () => widget.onShowMenu(song),
+        ),
+        title: Text(
+          song.title,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 14,
+            color: settings.textColor,
           ),
-        ],
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          song.artist,
+          style: TextStyle(
+            color: settings.subTextColor,
+            fontSize: 12,
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                color: settings.accentColor,
+                shape: BoxShape.circle,
+              ),
+              child: IconButton(
+                iconSize: 22,
+                icon: const Icon(Icons.play_arrow, color: Colors.black),
+                onPressed: () => widget.onPlaySong(queue, index),
+              ),
+            ),
+            IconButton(
+              icon: Icon(Icons.more_vert, color: settings.subTextColor),
+              onPressed: () => widget.onShowMenu(song),
+            ),
+          ],
+        ),
+        onTap: () => widget.onPlaySong(queue, index),
       ),
-      onTap: () => widget.onPlaySong(queue, index),
-    ),
-  );
+    );
   }
 }
 
@@ -890,22 +1085,38 @@ class MiniPlayer extends StatelessWidget {
                     color: settings.bgTheme == BgTheme.white
                         ? settings.accentColor.withOpacity(0.12)
                         : const Color(0xFF2C2C2C),
-                    child: song.artworkUrl != null && song.artworkUrl!.isNotEmpty
-                        ? Image.network(
-                            song.artworkUrl!,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Icon(
-                              Icons.music_note,
-                              color: settings.accentColor,
-                            ),
-                          )
-                        : Icon(Icons.music_note, color: settings.accentColor),
+                    child: () {
+                      final art = song.artworkUrl;
+                      if (art == null || art.isEmpty) {
+                        return Icon(Icons.music_note, color: settings.accentColor);
+                      }
+                      if (art.startsWith('http')) {
+                        return Image.network(
+                          art,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Icon(
+                            Icons.music_note,
+                            color: settings.accentColor,
+                          ),
+                        );
+                      }
+                      return Image.file(
+                        File(art),
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Icon(
+                          Icons.music_note,
+                          color: settings.accentColor,
+                        ),
+                      );
+                    }(),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisAlignment: Center(child: null).alignment == Alignment.center
+                        ? MainAxisAlignment.center
+                        : MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
@@ -986,14 +1197,12 @@ class SettingsTab extends StatelessWidget {
     return AnimatedBuilder(
       animation: settings,
       builder: (context, _) {
-        // Отримуємо назву поточної мови для підпису
         String currentLangLabel = 'Українська 🇺🇦';
         if (settings.currentLang == 'en') currentLangLabel = 'English 🇬🇧';
         if (settings.currentLang == 'pl') currentLangLabel = 'Polski 🇵🇱';
         if (settings.currentLang == 'de') currentLangLabel = 'Deutsch 🇩🇪';
         if (settings.currentLang == 'es') currentLangLabel = 'Español 🇪🇸';
 
-        // Отримуємо назву поточної теми фону
         String currentThemeLabel = settings.tr('black_amoled');
         if (settings.bgTheme == BgTheme.dark) currentThemeLabel = settings.tr('dark');
         if (settings.bgTheme == BgTheme.white) currentThemeLabel = settings.tr('white');
@@ -1090,6 +1299,7 @@ class SettingsTab extends StatelessWidget {
 // Вкладки Медіатека та Локальний пошук
 // -------------------------------------------------------------
 class MediaLibraryTab extends StatelessWidget {
+  final Function(Song, int) onShowSongMenu;
   final List<Song> librarySongs;
   final List<CustomPlaylist> userPlaylists;
   final ValueNotifier<Song?> currentPlayingSongNotifier;
@@ -1104,6 +1314,7 @@ class MediaLibraryTab extends StatelessWidget {
 
   const MediaLibraryTab({
     super.key,
+    required this.onShowSongMenu,
     required this.librarySongs,
     required this.userPlaylists,
     required this.currentPlayingSongNotifier,
@@ -1118,228 +1329,248 @@ class MediaLibraryTab extends StatelessWidget {
   });
 
   @override
-Widget build(BuildContext context) {
-  final settings = SettingsController.instance;
+  Widget build(BuildContext context) {
+    final settings = SettingsController.instance;
 
-  return DefaultTabController(
-    length: 2,
-    child: Scaffold(
-      backgroundColor: settings.backgroundColor,
-      appBar: AppBar(
-        title: Text(
-          AppLocale.tr('my_library'),
-          style: TextStyle(
-            color: settings.textColor,
-            fontWeight: FontWeight.bold,
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        backgroundColor: settings.backgroundColor,
+        appBar: AppBar(
+          title: Text(
+            AppLocale.tr('my_library'),
+            style: TextStyle(
+              color: settings.textColor,
+              fontWeight: FontWeight.bold,
+            ),
           ),
-        ),
-        backgroundColor: settings.bgTheme == BgTheme.white
-            ? settings.accentColor.withOpacity(0.12)
-            : settings.backgroundColor,
-        elevation: 0,
-        iconTheme: IconThemeData(color: settings.textColor),
-        bottom: TabBar(
-          indicatorColor: settings.accentColor,
-          labelColor: settings.accentColor,
-          unselectedLabelColor: settings.subTextColor,
-          tabs: [
-            Tab(text: AppLocale.tr('offline_tracks')),
-            Tab(text: AppLocale.tr('my_playlists')),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.add_circle_outline, color: settings.textColor),
-            onPressed: () => showModalBottomSheet(
-              context: context,
-              backgroundColor: settings.surfaceColor,
-              shape: const RoundedRectangleBorder(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-              ),
-              builder: (ctx) => Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    ListTile(
-                      leading: Icon(Icons.audio_file, color: settings.accentColor),
-                      title: Text(
-                        AppLocale.tr('add_local_tracks'),
-                        style: TextStyle(color: settings.textColor),
+          backgroundColor: settings.bgTheme == BgTheme.white
+              ? settings.accentColor.withOpacity(0.12)
+              : settings.backgroundColor,
+          elevation: 0,
+          iconTheme: IconThemeData(color: settings.textColor),
+          bottom: TabBar(
+            indicatorColor: settings.accentColor,
+            labelColor: settings.accentColor,
+            unselectedLabelColor: settings.subTextColor,
+            tabs: [
+              Tab(text: AppLocale.tr('offline_tracks')),
+              Tab(text: AppLocale.tr('my_playlists')),
+            ],
+          ),
+          actions: [
+            IconButton(
+              icon: Icon(Icons.add_circle_outline, color: settings.textColor),
+              onPressed: () => showModalBottomSheet(
+                context: context,
+                backgroundColor: settings.surfaceColor,
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                ),
+                builder: (ctx) => Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        leading: Icon(Icons.audio_file, color: settings.accentColor),
+                        title: Text(
+                          AppLocale.tr('add_local_tracks'),
+                          style: TextStyle(color: settings.textColor),
+                        ),
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          onPickFiles();
+                        },
                       ),
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        onPickFiles();
-                      },
-                    ),
-                    ListTile(
-                      leading: Icon(Icons.playlist_add, color: settings.accentColor),
-                      title: Text(
-                        AppLocale.tr('create_new_playlist'),
-                        style: TextStyle(color: settings.textColor),
+                      ListTile(
+                        leading: Icon(Icons.playlist_add, color: settings.accentColor),
+                        title: Text(
+                          AppLocale.tr('create_new_playlist'),
+                          style: TextStyle(color: settings.textColor),
+                        ),
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          onCreatePlaylist();
+                        },
                       ),
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        onCreatePlaylist();
-                      },
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
-      ),
-      body: TabBarView(
-        children: [
-          isLoading
-              ? Center(
-                  child: CircularProgressIndicator(color: settings.accentColor),
-                )
-              : librarySongs.isEmpty
-                  ? Center(
-                      child: Text(
-                        AppLocale.tr('no_offline_tracks'),
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: settings.subTextColor),
-                      ),
-                    )
-                  : ValueListenableBuilder<Song?>(
-                      valueListenable: currentPlayingSongNotifier,
-                      builder: (context, currentPlayingSong, _) {
-                        return ListView.builder(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          itemCount: librarySongs.length,
-                          itemBuilder: (context, index) {
-                            final song = librarySongs[index];
-                            final isCurrent = currentPlayingSong?.path == song.path;
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              decoration: BoxDecoration(
-                                color: isCurrent
-                                    ? settings.accentColor.withOpacity(0.18)
-                                    : settings.surfaceColor,
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: ListTile(
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                                leading: Icon(
-                                  Icons.music_note,
-                                  color: settings.accentColor,
-                                ),
-                                title: Text(
-                                  song.title,
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 14,
-                                    color: isCurrent
-                                        ? settings.accentColor
-                                        : settings.textColor,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                subtitle: Text(
-                                  song.artist,
-                                  style: TextStyle(
-                                    color: settings.subTextColor,
-                                    fontSize: 12,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                trailing: IconButton(
-                                  icon: Icon(Icons.more_vert, color: settings.subTextColor),
-                                  onPressed: () => onAddToPlaylist(song),
-                                ),
-                                onTap: () => onPlaySong(librarySongs, index),
-                              ),
-                            );
-                          },
-                        );
-                      },
-                    ),
-          userPlaylists.isEmpty
-              ? Center(
-                  child: Text(
-                    AppLocale.tr('no_playlists'),
-                    style: TextStyle(color: settings.subTextColor),
-                  ),
-                )
-              : GridView.builder(
-                  padding: const EdgeInsets.all(16),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    crossAxisSpacing: 16,
-                    mainAxisSpacing: 16,
-                    childAspectRatio: 0.85,
-                  ),
-                  itemCount: userPlaylists.length,
-                  itemBuilder: (context, index) {
-                    final pl = userPlaylists[index];
-                    return GestureDetector(
-                      onTap: () => onOpenPlaylist(pl),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: settings.surfaceColor,
-                          borderRadius: BorderRadius.circular(20),
+          ],
+        ),
+        body: TabBarView(
+          children: [
+            isLoading
+                ? Center(
+                    child: CircularProgressIndicator(color: settings.accentColor),
+                  )
+                : librarySongs.isEmpty
+                    ? Center(
+                        child: Text(
+                          AppLocale.tr('no_offline_tracks'),
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: settings.subTextColor),
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: Container(
-                                width: double.infinity,
+                      )
+                    : ValueListenableBuilder<Song?>(
+                        valueListenable: currentPlayingSongNotifier,
+                        builder: (context, currentPlayingSong, _) {
+                          return ListView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            itemCount: librarySongs.length,
+                            itemBuilder: (context, index) {
+                              final song = librarySongs[index];
+                              final isCurrent = currentPlayingSong?.path == song.path;
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 8),
                                 decoration: BoxDecoration(
-                                  color: settings.bgTheme == BgTheme.white
-                                      ? settings.accentColor.withOpacity(0.12)
-                                      : const Color(0xFF2C2C2C),
-                                  borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                                  color: isCurrent
+                                      ? settings.accentColor.withOpacity(0.18)
+                                      : settings.surfaceColor,
+                                  borderRadius: BorderRadius.circular(16),
                                 ),
-                                child: Icon(Icons.queue_music, size: 48, color: settings.accentColor),
-                              ),
-                            ),
-                            Padding(
-padding: const EdgeInsets.all(12.0),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    pl.name,
+                                child: ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                                  leading: ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Container(
+                                      width: 44,
+                                      height: 44,
+                                      color: settings.surfaceColor,
+                                      child: () {
+                                        final art = song.artworkUrl;
+                                        if (art == null || art.isEmpty) {
+                                          return Icon(Icons.music_note, color: settings.accentColor);
+                                        }
+                                        if (art.startsWith('http')) {
+                                          return Image.network(art, fit: BoxFit.cover);
+                                        }
+                                        return Image.file(File(art), fit: BoxFit.cover);
+                                      }(),
+                                    ),
+                                  ),
+                                  title: Text(
+                                    song.title,
                                     style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 15,
-                                      color: settings.textColor,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 14,
+                                      color: isCurrent
+                                          ? settings.accentColor
+                                          : settings.textColor,
                                     ),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    '${pl.songs.length} ${AppLocale.tr('tracks_count')}',
-                                    style: TextStyle(color: settings.subTextColor, fontSize: 12),
+                                  subtitle: Text(
+                                    song.artist,
+                                    style: TextStyle(
+                                      color: settings.subTextColor,
+                                      fontSize: 12,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                ],
+                                  trailing: IconButton(
+                                    icon: Icon(Icons.more_vert, color: settings.subTextColor),
+                                    onPressed: () => onShowSongMenu(song, index),
+                                  ),
+                                  onTap: () => onPlaySong(librarySongs, index),
+                                ),
+                              );
+                            },
+                          );
+                        },
+                      ),
+            userPlaylists.isEmpty
+                ? Center(
+                    child: Text(
+                      AppLocale.tr('no_playlists'),
+                      style: TextStyle(color: settings.subTextColor),
+                    ),
+                  )
+                : GridView.builder(
+                    padding: const EdgeInsets.all(16),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 16,
+                      mainAxisSpacing: 16,
+                      childAspectRatio: 0.85,
+                    ),
+                    itemCount: userPlaylists.length,
+                    itemBuilder: (context, index) {
+                      final pl = userPlaylists[index];
+                      return GestureDetector(
+                        onTap: () => onOpenPlaylist(pl),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: settings.surfaceColor,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Container(
+                                  width: double.infinity,
+                                  decoration: BoxDecoration(
+                                    color: settings.bgTheme == BgTheme.white
+                                        ? settings.accentColor.withOpacity(0.12)
+                                        : const Color(0xFF2C2C2C),
+                                    borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                                  ),
+                                  child: Icon(Icons.queue_music, size: 48, color: settings.accentColor),
+                                ),
                               ),
-                            ),
-                          ], // закриття children зовнішнього Column
-                        ),   // закриття зовнішнього Column
-                      ),     // закриття Container
-                    );       // закриття return GestureDetector
-                  },
-                ),
-        ],
+                              Padding(
+                                padding: const EdgeInsets.all(12.0),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      pl.name,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15,
+                                        color: settings.textColor,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      '${pl.songs.length} ${AppLocale.tr('tracks_count')}',
+                                      style: TextStyle(color: settings.subTextColor, fontSize: 12),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 }
 
 class SearchTab extends StatefulWidget {
   final List<Song> librarySongs;
   final Function(List<Song>, int) onSelectSong;
+  final Function(Song, int) onShowSongMenu;
 
-  const SearchTab({super.key, required this.librarySongs, required this.onSelectSong});
+  const SearchTab({
+    super.key,
+    required this.librarySongs,
+    required this.onSelectSong,
+    required this.onShowSongMenu,
+  });
 
   @override
   State<SearchTab> createState() => _SearchTabState();
@@ -1351,7 +1582,8 @@ class _SearchTabState extends State<SearchTab> {
   @override
   Widget build(BuildContext context) {
     final filtered = widget.librarySongs
-        .where((s) => s.title.toLowerCase().contains(_query.toLowerCase()))
+        .where((s) => s.title.toLowerCase().contains(_query.toLowerCase()) ||
+                      s.artist.toLowerCase().contains(_query.toLowerCase()))
         .toList();
 
     final settings = SettingsController.instance;
@@ -1382,7 +1614,7 @@ class _SearchTabState extends State<SearchTab> {
                 fillColor: settings.surfaceColor,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(16),
-                  borderSide: BorderSide.none,
+                  borderSide: borderSideNone,
                 ),
               ),
             ),
@@ -1399,6 +1631,8 @@ class _SearchTabState extends State<SearchTab> {
                       itemCount: filtered.length,
                       itemBuilder: (context, index) {
                         final song = filtered[index];
+                        final originalIndex = widget.librarySongs.indexOf(song);
+
                         return Container(
                           margin: const EdgeInsets.only(bottom: 8),
                           decoration: BoxDecoration(
@@ -1406,9 +1640,23 @@ class _SearchTabState extends State<SearchTab> {
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: ListTile(
-                            leading: Icon(
-                              Icons.music_note,
-                              color: settings.accentColor,
+                            leading: ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Container(
+                                width: 44,
+                                height: 44,
+                                color: settings.surfaceColor,
+                                child: () {
+                                  final art = song.artworkUrl;
+                                  if (art == null || art.isEmpty) {
+                                    return Icon(Icons.music_note, color: settings.accentColor);
+                                  }
+                                  if (art.startsWith('http')) {
+                                    return Image.network(art, fit: BoxFit.cover);
+                                  }
+                                  return Image.file(File(art), fit: BoxFit.cover);
+                                }(),
+                              ),
                             ),
                             title: Text(
                               song.title,
@@ -1416,15 +1664,23 @@ class _SearchTabState extends State<SearchTab> {
                                 color: settings.textColor,
                                 fontWeight: FontWeight.w600,
                               ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: Text(
                               song.artist,
                               style: TextStyle(color: settings.subTextColor),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            trailing: Icon(
-                              Icons.more_vert,
-                              color: settings.subTextColor,
+                            trailing: IconButton(
+                              icon: Icon(
+                                Icons.more_vert,
+                                color: settings.subTextColor,
+                              ),
+                              onPressed: () => widget.onShowSongMenu(song, originalIndex),
                             ),
+                            onTap: () => widget.onSelectSong(filtered, index),
                           ),
                         );
                       },
@@ -1436,6 +1692,8 @@ class _SearchTabState extends State<SearchTab> {
     );
   }
 }
+
+const BorderSide borderSideNone = BorderSide.none;
 
 class PlaylistDetailScreen extends StatelessWidget {
   final CustomPlaylist playlist;

@@ -7,9 +7,9 @@ final ValueNotifier<String> appLanguageNotifier = ValueNotifier<String>('uk');
 final ValueNotifier<String> appThemeNotifier = ValueNotifier<String>('dark');
 
 class Song {
-  final String title;
+  String title;
   final String path;
-  final String artist;
+  String artist;
   final bool isOnline;
   final String? artworkUrl;
   final String? trackId;
