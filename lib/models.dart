@@ -1,3 +1,4 @@
+import 'settings_controller.dart';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -62,46 +63,210 @@ class CustomPlaylist {
 
 class AppLocale {
   static const Map<String, Map<String, String>> _values = {
-    'media': {'uk': 'Медіа', 'en': 'Media', 'ru': 'Медиа'},
-    'search': {'uk': 'Пошук', 'en': 'Search', 'ru': 'Поиск'},
-    'discover': {'uk': 'Інтернет', 'en': 'Discover', 'ru': 'Обзор'},
-    'settings': {'uk': 'Налаштування', 'en': 'Settings', 'ru': 'Настройки'},
-    'my_library': {'uk': 'Моя Медіатека', 'en': 'My Library', 'ru': 'Моя Медиатека'},
-    'offline_tracks': {'uk': 'Офлайн треки', 'en': 'Offline Tracks', 'ru': 'Офлайн треки'},
-    'my_playlists': {'uk': 'Мої плейлисти', 'en': 'My Playlists', 'ru': 'Мои плейлисты'},
-    'now_playing': {'uk': 'ЗАРАЗ ГРАЄ', 'en': 'NOW PLAYING', 'ru': 'СЕЙЧАС ИГРАЕТ'},
-    'add_local_tracks': {'uk': 'Додати локальні треки', 'en': 'Add local tracks', 'ru': 'Добавить локальные треки'},
-    'create_new_playlist': {'uk': 'Створити новий плейлист', 'en': 'Create new playlist', 'ru': 'Создать новый плейлист'},
-    'add_to_playlist': {'uk': 'Додати в плейлист', 'en': 'Add to playlist', 'ru': 'Добавить в плейлист'},
-    'delete_from_storage': {'uk': 'Видалити з памʼяті', 'en': 'Delete from device', 'ru': 'Удалить из памяти'},
+    'media': {
+      'uk': 'Медіа',
+      'en': 'Media',
+      'pl': 'Media',
+      'de': 'Medien',
+      'es': 'Medios',
+    },
+    'search': {
+      'uk': 'Пошук',
+      'en': 'Search',
+      'pl': 'Szukaj',
+      'de': 'Suche',
+      'es': 'Buscar',
+    },
+    'discover': {
+      'uk': 'Інтернет',
+      'en': 'Discover',
+      'pl': 'Odkrywaj',
+      'de': 'Entdecken',
+      'es': 'Descubrir',
+    },
+    'settings': {
+      'uk': 'Налаштування',
+      'en': 'Settings',
+      'pl': 'Ustawienia',
+      'de': 'Einstellungen',
+      'es': 'Ajustes',
+    },
+    'my_library': {
+      'uk': 'Моя Медіатека',
+      'en': 'My Library',
+      'pl': 'Moja Biblioteka',
+      'de': 'Meine Bibliothek',
+      'es': 'Mi Biblioteca',
+    },
+    'offline_tracks': {
+      'uk': 'Офлайн треки',
+      'en': 'Offline Tracks',
+      'pl': 'Utwory offline',
+      'de': 'Offline-Titel',
+      'es': 'Pistas sin conexión',
+    },
+    'my_playlists': {
+      'uk': 'Мої плейлисти',
+      'en': 'My Playlists',
+      'pl': 'Moje playlisty',
+      'de': 'Meine Playlists',
+      'es': 'Mis listas',
+    },
+    'now_playing': {
+      'uk': 'ЗАРАЗ ГРАЄ',
+      'en': 'NOW PLAYING',
+      'pl': 'TERAZ ODTWARZANE',
+      'de': 'JETZT LÄUFT',
+      'es': 'REPRODUCIENDO',
+    },
+    'add_local_tracks': {
+      'uk': 'Додати локальні треки',
+      'en': 'Add local tracks',
+      'pl': 'Dodaj utwory lokalne',
+      'de': 'Lokale Titel hinzufügen',
+      'es': 'Añadir pistas locales',
+    },
+    'create_new_playlist': {
+      'uk': 'Створити новий плейлист',
+      'en': 'Create new playlist',
+      'pl': 'Utwórz nową playlistę',
+      'de': 'Neue Playlist erstellen',
+      'es': 'Crear nueva lista',
+    },
+    'add_to_playlist': {
+      'uk': 'Додати в плейлист',
+      'en': 'Add to playlist',
+      'pl': 'Dodaj do playlisty',
+      'de': 'Zur Playlist hinzufügen',
+      'es': 'Añadir a la lista',
+    },
+    'delete_from_storage': {
+      'uk': 'Видалити з памʼяті',
+      'en': 'Delete from device',
+      'pl': 'Usuń z urządzenia',
+      'de': 'Vom Gerät löschen',
+      'es': 'Eliminar del dispositivo',
+    },
     'no_offline_tracks': {
       'uk': 'Офлайн-треків немає :(\nДодай файли або збережи з Інтернету',
       'en': 'No offline tracks :(\nAdd files or save from Web',
-      'ru': 'Офлайн-треков нет :(\nДобавьте файлы или сохраните из интернета',
+      'pl': 'Brak utworów offline :(\nDodaj pliki lub pobierz z sieci',
+      'de': 'Keine Offline-Titel :(\nDateien hinzufügen oder herunterladen',
+      'es': 'Sin canciones sin conexión :(\nAñade archivos o descarga de la red',
     },
-    'no_playlists': {'uk': 'У тебе ще немає плейлистів :)', 'en': 'No playlists yet :)', 'ru': 'У вас еще нет плейлистов :)'},
-    'search_library_hint': {'uk': 'Пошук по медіатеці...', 'en': 'Search library...', 'ru': 'Поиск по медиатеке...'},
-    'search_web_hint': {'uk': 'Пошук треків (Lil Peep, PHARAOH, Slipknot)...', 'en': 'Search tracks...', 'ru': 'Поиск треков...'},
-    'popular_in_ukraine': {'uk': '🔥 Популярне зараз', 'en': '🔥 Popular Now', 'ru': '🔥 Популярное сейчас'},
-    'you_might_like': {'uk': '✨ Вам може сподобатись', 'en': '✨ You might like', 'ru': '✨ Вам может понравиться'},
-    'save_offline': {'uk': 'Зберегти офлайн', 'en': 'Save offline', 'ru': 'Сохранить офлайн'},
-    'tracks_count': {'uk': 'треків', 'en': 'tracks', 'ru': 'треков'},
-    'language': {'uk': 'Мова інтерфейсу', 'en': 'App Language', 'ru': 'Язык интерфейса'},
-    'appearance_and_language': {'uk': 'Вигляд та мова', 'en': 'Appearance & Language', 'ru': 'Вид и язык'},
-    'theme': {'uk': 'Тема оформлення', 'en': 'Theme', 'ru': 'Тема оформления'},
-    'theme_dark': {'uk': 'Темна (Dark)', 'en': 'Dark', 'ru': 'Темная'},
-    'theme_oled': {'uk': 'AMOLED Чорна', 'en': 'AMOLED Black', 'ru': 'AMOLED Черная'},
-    'theme_material3': {'uk': 'Material You (Dynamic)', 'en': 'Material You (Dynamic)', 'ru': 'Material You (Динамическая)'},
-    'about_app': {'uk': 'Про додаток', 'en': 'About App', 'ru': 'О приложении'},
-    'cancel': {'uk': 'Скасувати', 'en': 'Cancel', 'ru': 'Отмена'},
-    'create': {'uk': 'Створити', 'en': 'Create', 'ru': 'Создать'},
-    'local_track_artist': {'uk': 'Локальний файл', 'en': 'Local File', 'ru': 'Локальный файл'},
-    'empty_search': {'uk': 'Нічого не знайдено :(', 'en': 'Nothing found :(', 'ru': 'Ничего не найдено :('},
+    'no_playlists': {
+      'uk': 'У тебе ще немає плейлистів :)',
+      'en': 'No playlists yet :)',
+      'pl': 'Nie masz jeszcze playlist :)',
+      'de': 'Noch keine Playlists vorhanden :)',
+      'es': 'Aún no tienes listas :)',
+    },
+    'search_library_hint': {
+      'uk': 'Пошук по медіатеці...',
+      'en': 'Search library...',
+      'pl': 'Szukaj w bibliotece...',
+      'de': 'In Bibliothek suchen...',
+      'es': 'Buscar en la biblioteca...',
+    },
+    'search_web_hint': {
+      'uk': 'Пошук треків (Lil Peep, PHARAOH, Slipknot)...',
+      'en': 'Search tracks...',
+      'pl': 'Szukaj utworów...',
+      'de': 'Titel suchen...',
+      'es': 'Buscar canciones...',
+    },
+    'popular_in_ukraine': {
+      'uk': '🔥 Популярне зараз',
+      'en': '🔥 Popular Now',
+      'pl': '🔥 Popularne teraz',
+      'de': '🔥 Beliebt jetzt',
+      'es': '🔥 Popular ahora',
+    },
+    'you_might_like': {
+      'uk': '✨ Вам може сподобатись',
+      'en': '✨ You might like',
+      'pl': '✨ Może Ci się spodobać',
+      'de': '✨ Das könnte dir gefallen',
+      'es': '✨ Te podría gustar',
+    },
+    'save_offline': {
+      'uk': 'Зберегти офлайн',
+      'en': 'Save offline',
+      'pl': 'Zapisz offline',
+      'de': 'Offline speichern',
+      'es': 'Guardar sin conexión',
+    },
+    'tracks_count': {
+      'uk': 'треків',
+      'en': 'tracks',
+      'pl': 'utworów',
+      'de': 'Titel',
+      'es': 'pistas',
+    },
+    'language': {
+      'uk': 'Мова інтерфейсу',
+      'en': 'App Language',
+      'pl': 'Język aplikacji',
+      'de': 'App-Sprache',
+      'es': 'Idioma de la aplicación',
+    },
+    'appearance_and_language': {
+      'uk': 'Вигляд та мова',
+      'en': 'Appearance & Language',
+      'pl': 'Wygląd i język',
+      'de': 'Design & Sprache',
+      'es': 'Apariencia e idioma',
+    },
+    'theme': {
+      'uk': 'Тема оформлення',
+      'en': 'Theme',
+      'pl': 'Motyw',
+      'de': 'Design-Thema',
+      'es': 'Tema',
+    },
+    'about_app': {
+      'uk': 'Про додаток',
+      'en': 'About App',
+      'pl': 'O aplikacji',
+      'de': 'Über die App',
+      'es': 'Acerca de la app',
+    },
+    'cancel': {
+      'uk': 'Скасувати',
+      'en': 'Cancel',
+      'pl': 'Anuluj',
+      'de': 'Abbrechen',
+      'es': 'Cancelar',
+    },
+    'create': {
+      'uk': 'Створити',
+      'en': 'Create',
+      'pl': 'Utwórz',
+      'de': 'Erstellen',
+      'es': 'Crear',
+    },
+    'local_track_artist': {
+      'uk': 'Локальний файл',
+      'en': 'Local File',
+      'pl': 'Plik lokalny',
+      'de': 'Lokale Datei',
+      'es': 'Archivo local',
+    },
+    'empty_search': {
+      'uk': 'Нічого не знайдено :(',
+      'en': 'Nothing found :(',
+      'pl': 'Nic nie znaleziono :(',
+      'de': 'Nichts gefunden :(',
+      'es': 'No se encontró nada :(',
+    },
   };
 
   static String tr(String key) {
-    final lang = appLanguageNotifier.value;
-    return _values[key]?[lang] ?? _values[key]?['uk'] ?? key;
+    final lang = SettingsController.instance.currentLang;
+    if (_values.containsKey(key)) {
+      return _values[key]?[lang] ?? _values[key]?['uk'] ?? key;
+    }
+    return SettingsController.instance.tr(key);
   }
 }
 
