@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dsp_engine.dart';
@@ -83,7 +85,6 @@ class EqualizerController extends ChangeNotifier {
     preampDb = prefs.getDouble('dsp_preamp') ?? 0.0;
     currentPresetName = prefs.getString('dsp_preset') ?? 'Flat';
 
-    // Завантаження кастомних пресетів
     final savedCustom = prefs.getString('dsp_custom_presets');
     if (savedCustom != null) {
       try {
@@ -216,6 +217,44 @@ class EqualizerController extends ChangeNotifier {
     saveSettings();
   }
 
+  void overwriteCustomPreset(String name) {
+    if (!customPresets.containsKey(name)) return;
+    customPresets[name] = CustomPreset(
+      name: name,
+      bands: bands.map((b) => b.gainDb).toList(),
+      tubeDrive: tubeDrive,
+      exciterAmount: exciterAmount,
+      stereoWidth: stereoWidth,
+      reverbMix: reverbMix,
+      preampDb: preampDb,
+    );
+    currentPresetName = name;
+    notifyListeners();
+    saveSettings();
+  }
+
+  void renameCustomPreset(String oldName, String newName) {
+    final trimmed = newName.trim();
+    if (trimmed.isEmpty || oldName == trimmed || !customPresets.containsKey(oldName)) return;
+
+    final old = customPresets.remove(oldName)!;
+    customPresets[trimmed] = CustomPreset(
+      name: trimmed,
+      bands: old.bands,
+      tubeDrive: old.tubeDrive,
+      exciterAmount: old.exciterAmount,
+      stereoWidth: old.stereoWidth,
+      reverbMix: old.reverbMix,
+      preampDb: old.preampDb,
+    );
+
+    if (currentPresetName == oldName) {
+      currentPresetName = trimmed;
+    }
+    notifyListeners();
+    saveSettings();
+  }
+
   void deleteCustomPreset(String name) {
     if (customPresets.containsKey(name)) {
       customPresets.remove(name);
@@ -228,6 +267,66 @@ class EqualizerController extends ChangeNotifier {
       notifyListeners();
       applyAll();
       saveSettings();
+    }
+  }
+
+  // Експорт вибраного пресету у файл через системний діалог
+  Future<bool> exportCustomPresetToFile(String presetName) async {
+    try {
+      CustomPreset? preset = customPresets[presetName];
+      // Якщо це поточні налаштування
+      preset ??= CustomPreset(
+        name: presetName,
+        bands: bands.map((b) => b.gainDb).toList(),
+        tubeDrive: tubeDrive,
+        exciterAmount: exciterAmount,
+        stereoWidth: stereoWidth,
+        reverbMix: reverbMix,
+        preampDb: preampDb,
+      );
+
+      final jsonStr = const JsonEncoder.withIndent('  ').convert(preset.toMap());
+      final safeName = presetName.replaceAll(RegExp(r'[\\/:*?"<>| ]'), '_');
+      final fileName = '${safeName}_preset.json';
+
+      final resultPath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Оберіть місце збереження пресету',
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        bytes: utf8.encode(jsonStr),
+      );
+
+      return resultPath != null;
+    } catch (e) {
+      debugPrint('Export preset error: $e');
+      return false;
+    }
+  }
+
+  // Імпорт пресету з .json файлу через системний провідник
+  Future<String?> importPresetFromFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result == null || result.files.single.path == null) return null;
+
+      final file = File(result.files.single.path!);
+      final content = await file.readAsString();
+      final Map<String, dynamic> data = jsonDecode(content);
+
+      final imported = CustomPreset.fromMap(data);
+      customPresets[imported.name] = imported;
+      
+      // Одразу обираємо та активуємо його
+      selectPreset(imported.name);
+      return imported.name;
+    } catch (e) {
+      debugPrint('Import preset error: $e');
+      return null;
     }
   }
 

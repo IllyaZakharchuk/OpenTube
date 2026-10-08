@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:audio_service/audio_service.dart';
 import 'models.dart';
@@ -14,6 +13,10 @@ class PlayerScreen extends StatefulWidget {
   final VoidCallback onNext;
   final VoidCallback onPrev;
   final VoidCallback onDownloadCurrent;
+  final VoidCallback onToggleShuffle;
+  final VoidCallback onToggleRepeat;
+  final bool isShuffle;
+  final bool isRepeat;
 
   const PlayerScreen({
     super.key,
@@ -23,6 +26,10 @@ class PlayerScreen extends StatefulWidget {
     required this.onNext,
     required this.onPrev,
     required this.onDownloadCurrent,
+    required this.onToggleShuffle,
+    required this.onToggleRepeat,
+    this.isShuffle = false,
+    this.isRepeat = false,
   });
 
   @override
@@ -31,6 +38,8 @@ class PlayerScreen extends StatefulWidget {
 
 class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMixin {
   bool isPlaying = false;
+  late bool isShuffleActive;
+  late bool isRepeatActive;
   Duration duration = const Duration(minutes: 3, seconds: 30);
   Duration position = Duration.zero;
 
@@ -45,6 +54,8 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
   @override
   void initState() {
     super.initState();
+    isShuffleActive = widget.isShuffle;
+    isRepeatActive = widget.isRepeat;
     isPlaying = widget.audioHandler.playbackState.value.playing;
 
     _rotationController = AnimationController(
@@ -77,20 +88,17 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
     _playbackSub = widget.audioHandler.playbackState.listen((state) {
       if (!mounted) return;
       final playing = state.playing;
+
+      // Оновлюємо стан, якщо аудіосервіс змінив статус ззовні
+      if (isPlaying != playing) {
+        setState(() {
+          isPlaying = playing;
+          _updateAnimations(playing);
+        });
+      }
+
       setState(() {
-        isPlaying = playing;
         position = state.position;
-        if (playing) {
-          _morphController.forward();
-          if (!_rotationController.isAnimating) _rotationController.repeat();
-          if (!_beatController.isAnimating) _beatController.repeat(reverse: true);
-          if (!_fluidController.isAnimating) _fluidController.repeat();
-        } else {
-          _morphController.reverse();
-          _rotationController.stop();
-          _beatController.stop();
-          _fluidController.stop();
-        }
       });
     });
 
@@ -100,6 +108,33 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
         setState(() => duration = item!.duration!);
       }
     });
+  }
+
+  void _updateAnimations(bool playing) {
+    if (playing) {
+      _morphController.forward();
+      if (!_rotationController.isAnimating) _rotationController.repeat();
+      if (!_beatController.isAnimating) _beatController.repeat(reverse: true);
+      if (!_fluidController.isAnimating) _fluidController.repeat();
+    } else {
+      _morphController.reverse();
+      _rotationController.stop();
+      _beatController.stop();
+      _fluidController.stop();
+    }
+  }
+
+  void _handleOptimisticPlayPause() {
+    final nextState = !isPlaying;
+
+    // 1. МИТТЄВО перемикаємо стан в інтерфейсі (кнопка, хвиля, обертання)
+    setState(() {
+      isPlaying = nextState;
+      _updateAnimations(nextState);
+    });
+
+    // 2. Запускаємо логіку плавного згасання/наростання
+    widget.onPlayPause();
   }
 
   @override
@@ -296,21 +331,23 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                   children: [
                     // Повноекранний живий фон лава-лампи
                     Positioned.fill(
-                      child: AnimatedBuilder(
-                        animation: Listenable.merge([_beatController, _fluidController, _morphController]),
-                        builder: (context, _) {
-                          final smoothBeat = Curves.easeInOutSine.transform(_beatController.value);
+                      child: RepaintBoundary(
+                        child: AnimatedBuilder(
+                          animation: Listenable.merge([_beatController, _fluidController, _morphController]),
+                          builder: (context, _) {
+                            final smoothBeat = Curves.easeInOutSine.transform(_beatController.value);
 
-                          return CustomPaint(
-                            painter: _FullscreenLavalampBackgroundPainter(
-                              baseBackgroundColor: settings.backgroundColor,
-                              accentColor: accent,
-                              beatProgress: smoothBeat,
-                              fluidProgress: _fluidController.value,
-                              activeProgress: _morphController.value,
-                            ),
-                          );
-                        },
+                            return CustomPaint(
+                              painter: _FullscreenLavalampBackgroundPainter(
+                                baseBackgroundColor: settings.backgroundColor,
+                                accentColor: accent,
+                                beatProgress: smoothBeat,
+                                fluidProgress: _fluidController.value,
+                                activeProgress: _morphController.value,
+                              ),
+                            );
+                          },
+                        ),
                       ),
                     ),
 
@@ -318,6 +355,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                     SafeArea(
                       child: Column(
                         children: [
+                          // 1. Верхня панель зі стрілкою назад
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
                             child: Row(
@@ -338,6 +376,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                             ),
                           ),
 
+                          // 2. Обкладинка з ефектом світіння
                           Expanded(
                             child: Center(
                               child: LayoutBuilder(
@@ -352,21 +391,23 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                                       alignment: Alignment.center,
                                       clipBehavior: Clip.none,
                                       children: [
-                                        AnimatedBuilder(
-                                          animation: Listenable.merge([_beatController, _fluidController, _morphController]),
-                                          builder: (context, _) {
-                                            final smoothBeat = Curves.easeInOutSine.transform(_beatController.value);
+                                        RepaintBoundary(
+                                          child: AnimatedBuilder(
+                                            animation: Listenable.merge([_beatController, _fluidController, _morphController]),
+                                            builder: (context, _) {
+                                              final smoothBeat = Curves.easeInOutSine.transform(_beatController.value);
 
-                                            return CustomPaint(
-                                              size: Size(glowBoxSize, glowBoxSize),
-                                              painter: _LavalampGlowPainter(
-                                                accentColor: accent,
-                                                beatProgress: smoothBeat,
-                                                fluidProgress: _fluidController.value,
-                                                activeProgress: _morphController.value,
-                                              ),
-                                            );
-                                          },
+                                              return CustomPaint(
+                                                size: Size(glowBoxSize, glowBoxSize),
+                                                painter: _LavalampGlowPainter(
+                                                  accentColor: accent,
+                                                  beatProgress: smoothBeat,
+                                                  fluidProgress: _fluidController.value,
+                                                  activeProgress: _morphController.value,
+                                                ),
+                                              );
+                                            },
+                                          ),
                                         ),
                                         AnimatedSwitcher(
                                           duration: const Duration(milliseconds: 380),
@@ -414,6 +455,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                             ),
                           ),
 
+                          // 3. Назва треку та виконавець
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 28.0, vertical: 8.0),
                             child: GestureDetector(
@@ -470,7 +512,63 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                             ),
                           ),
 
-                          // Хвиля з кнопками керування
+                          // 4. Панель кнопок: Shuffle та Repeat
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 28.0, vertical: 6.0),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Material(
+                                  color: isShuffleActive
+                                      ? accent.withOpacity(0.25)
+                                      : settings.surfaceColor.withOpacity(0.6),
+                                  borderRadius: BorderRadius.circular(24),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(24),
+                                    onTap: () {
+                                      setState(() {
+                                        isShuffleActive = !isShuffleActive;
+                                      });
+                                      widget.onToggleShuffle();
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
+                                      child: Icon(
+                                        Icons.shuffle_rounded,
+                                        size: 22,
+                                        color: isShuffleActive ? accent : settings.textColor.withOpacity(0.55),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                Material(
+                                  color: isRepeatActive
+                                      ? accent.withOpacity(0.25)
+                                      : settings.surfaceColor.withOpacity(0.6),
+                                  borderRadius: BorderRadius.circular(24),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(24),
+                                    onTap: () {
+                                      setState(() {
+                                        isRepeatActive = !isRepeatActive;
+                                      });
+                                      widget.onToggleRepeat();
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
+                                      child: Icon(
+                                        Icons.repeat_rounded,
+                                        size: 22,
+                                        color: isRepeatActive ? accent : settings.textColor.withOpacity(0.55),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          // 5. Блок хвилі з кнопками керування
                           SizedBox(
                             height: 220,
                             child: LayoutBuilder(
@@ -492,6 +590,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                                           child: CenteredWaveformScroller(
                                             duration: duration,
                                             position: position,
+                                            isPlaying: isPlaying,
                                             lineGrowProgress: lineProgress,
                                             activeColor: accent,
                                             inactiveColor: settings.subTextColor.withOpacity(0.20),
@@ -515,7 +614,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                                             onPressed: widget.onPrev,
                                           ),
                                           GestureDetector(
-                                            onTap: widget.onPlayPause,
+                                            onTap: _handleOptimisticPlayPause,
                                             child: SizedBox(
                                               width: 96,
                                               height: 96,
@@ -543,10 +642,22 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                                                       );
                                                     },
                                                   ),
-                                                  Icon(
-                                                    isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                                                    size: 48,
-                                                    color: Colors.black,
+                                                  AnimatedSwitcher(
+                                                    duration: const Duration(milliseconds: 280),
+                                                    switchInCurve: Curves.easeOutBack,
+                                                    switchOutCurve: Curves.easeInBack,
+                                                    transitionBuilder: (child, animation) {
+                                                      return ScaleTransition(
+                                                        scale: animation,
+                                                        child: FadeTransition(opacity: animation, child: child),
+                                                      );
+                                                    },
+                                                    child: Icon(
+                                                      isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                                                      key: ValueKey<bool>(isPlaying),
+                                                      size: 48,
+                                                      color: Colors.black,
+                                                    ),
                                                   ),
                                                 ],
                                               ),
@@ -566,6 +677,7 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                             ),
                           ),
 
+                          // 6. Таймінги треку
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
                             child: Row(
@@ -836,9 +948,10 @@ class _ScallopButtonPainter extends CustomPainter {
   }
 }
 
-class CenteredWaveformScroller extends StatelessWidget {
+class CenteredWaveformScroller extends StatefulWidget {
   final Duration duration;
   final Duration position;
+  final bool isPlaying;
   final double lineGrowProgress;
   final Color activeColor;
   final Color inactiveColor;
@@ -848,44 +961,117 @@ class CenteredWaveformScroller extends StatelessWidget {
     super.key,
     required this.duration,
     required this.position,
+    required this.isPlaying,
     required this.lineGrowProgress,
     required this.activeColor,
     required this.inactiveColor,
     required this.onSeek,
   });
 
+  @override
+  State<CenteredWaveformScroller> createState() => _CenteredWaveformScrollerState();
+}
+
+class _CenteredWaveformScrollerState extends State<CenteredWaveformScroller>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ticker;
+  double _smoothPositionMs = 0.0;
+  DateTime _lastTickTime = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    _smoothPositionMs = widget.position.inMilliseconds.toDouble();
+    _lastTickTime = DateTime.now();
+
+    _ticker = AnimationController.unbounded(vsync: this)..addListener(_onTick);
+
+    if (widget.isPlaying) {
+      _ticker.repeat(min: 0, max: 1, period: const Duration(seconds: 1));
+    }
+  }
+
+  void _onTick() {
+    final now = DateTime.now();
+    final elapsedMs = now.difference(_lastTickTime).inMicroseconds / 1000.0;
+    _lastTickTime = now;
+
+    if (widget.isPlaying && widget.duration.inMilliseconds > 0) {
+      setState(() {
+        _smoothPositionMs += elapsedMs;
+        if (_smoothPositionMs > widget.duration.inMilliseconds) {
+          _smoothPositionMs = widget.duration.inMilliseconds.toDouble();
+        }
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant CenteredWaveformScroller oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    final realMs = widget.position.inMilliseconds.toDouble();
+    if ((_smoothPositionMs - realMs).abs() > 250 || !widget.isPlaying) {
+      _smoothPositionMs = realMs;
+    }
+
+    if (widget.isPlaying != oldWidget.isPlaying) {
+      _lastTickTime = DateTime.now();
+      if (widget.isPlaying) {
+        if (!_ticker.isAnimating) {
+          _ticker.repeat(min: 0, max: 1, period: const Duration(seconds: 1));
+        }
+      } else {
+        _ticker.stop();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker.removeListener(_onTick);
+    _ticker.dispose();
+    super.dispose();
+  }
+
   void _handleDrag(DragUpdateDetails details, double totalWidth) {
-    if (duration.inMilliseconds <= 0 || totalWidth <= 0) return;
-    final double deltaMs = (-details.delta.dx / (totalWidth * 0.9)) * duration.inMilliseconds;
-    final int newMs = (position.inMilliseconds + deltaMs).clamp(0, duration.inMilliseconds).toInt();
-    onSeek(Duration(milliseconds: newMs));
+    if (widget.duration.inMilliseconds <= 0 || totalWidth <= 0) return;
+    final double deltaMs =
+        (-details.delta.dx / (totalWidth * 0.9)) * widget.duration.inMilliseconds;
+    final double newMs = (_smoothPositionMs + deltaMs)
+        .clamp(0.0, widget.duration.inMilliseconds.toDouble());
+    setState(() => _smoothPositionMs = newMs);
+    widget.onSeek(Duration(milliseconds: newMs.toInt()));
   }
 
   void _handleTap(TapDownDetails details, double totalWidth) {
-    if (duration.inMilliseconds <= 0 || totalWidth <= 0) return;
+    if (widget.duration.inMilliseconds <= 0 || totalWidth <= 0) return;
     final double center = totalWidth / 2;
     final double offsetFromCenter = details.localPosition.dx - center;
-    final double deltaMs = (offsetFromCenter / (totalWidth * 0.9)) * duration.inMilliseconds;
-    final int newMs = (position.inMilliseconds + deltaMs).clamp(0, duration.inMilliseconds).toInt();
-    onSeek(Duration(milliseconds: newMs));
+    final double deltaMs =
+        (offsetFromCenter / (totalWidth * 0.9)) * widget.duration.inMilliseconds;
+    final double newMs = (_smoothPositionMs + deltaMs)
+        .clamp(0.0, widget.duration.inMilliseconds.toDouble());
+    setState(() => _smoothPositionMs = newMs);
+    widget.onSeek(Duration(milliseconds: newMs.toInt()));
   }
 
   @override
   Widget build(BuildContext context) {
-    final progress = duration.inMilliseconds > 0
-        ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0)
+    final progress = widget.duration.inMilliseconds > 0
+        ? (_smoothPositionMs / widget.duration.inMilliseconds).clamp(0.0, 1.0)
         : 0.0;
 
     const double maxLineHeight = 230.0;
-    final double currentLineHeight = maxLineHeight * lineGrowProgress;
+    final double currentLineHeight = maxLineHeight * widget.lineGrowProgress;
 
-    final hsl = HSLColor.fromColor(activeColor);
+    final hsl = HSLColor.fromColor(widget.activeColor);
     final edgeSoftColor = hsl
         .withLightness((hsl.lightness * 0.80).clamp(0.0, 1.0))
         .toColor()
-        .withOpacity(0.85 * lineGrowProgress);
+        .withOpacity(0.85 * widget.lineGrowProgress);
 
-    final centerBrightColor = activeColor.withOpacity(0.95 * lineGrowProgress);
+    final centerBrightColor = widget.activeColor.withOpacity(0.95 * widget.lineGrowProgress);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -899,12 +1085,14 @@ class CenteredWaveformScroller extends StatelessWidget {
             child: Stack(
               alignment: Alignment.center,
               children: [
-                CustomPaint(
-                  size: Size(constraints.maxWidth, 220),
-                  painter: _InfiniteCenteredWaveformPainter(
-                    progress: progress,
-                    activeColor: activeColor.withOpacity(0.38),
-                    inactiveColor: inactiveColor,
+                RepaintBoundary(
+                  child: CustomPaint(
+                    size: Size(constraints.maxWidth, 220),
+                    painter: _InfiniteCenteredWaveformPainter(
+                      progress: progress,
+                      activeColor: widget.activeColor.withOpacity(0.38),
+                      inactiveColor: widget.inactiveColor,
+                    ),
                   ),
                 ),
                 if (currentLineHeight > 4.0)
@@ -927,7 +1115,7 @@ class CenteredWaveformScroller extends StatelessWidget {
                         ),
                         boxShadow: [
                           BoxShadow(
-                            color: activeColor.withOpacity(0.60 * lineGrowProgress),
+                            color: widget.activeColor.withOpacity(0.60 * widget.lineGrowProgress),
                             blurRadius: 16,
                             spreadRadius: 2,
                           ),
@@ -957,7 +1145,7 @@ class _InfiniteCenteredWaveformPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    const int totalBands = 46;
+    const int totalBands = 80;
     const double barWidth = 10.5;
     const double barSpacing = 6.5;
     const double unitStep = barWidth + barSpacing;
@@ -973,9 +1161,10 @@ class _InfiniteCenteredWaveformPainter extends CustomPainter {
       ..color = inactiveColor
       ..style = PaintingStyle.fill;
 
+    final double currentBandAtCenter = progress * totalBands;
+
     for (int i = 0; i < totalBands; i++) {
-      final double barCenterOriginal = i * unitStep;
-      final double x = centerX + (barCenterOriginal - scrollOffset);
+      final double x = centerX + (i * unitStep - scrollOffset);
 
       if (x < -unitStep || x > size.width + unitStep) continue;
 
@@ -992,7 +1181,8 @@ class _InfiniteCenteredWaveformPainter extends CustomPainter {
         const Radius.circular(5.5),
       );
 
-      canvas.drawRRect(rect, x <= centerX ? activePaint : inactivePaint);
+      final bool isPassed = i < currentBandAtCenter;
+      canvas.drawRRect(rect, isPassed ? activePaint : inactivePaint);
     }
   }
 

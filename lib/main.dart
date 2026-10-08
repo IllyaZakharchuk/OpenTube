@@ -18,11 +18,16 @@ import 'equalizer_screen.dart';
 import 'equalizer_controller.dart';
 import 'dsp_engine.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'dart:math' as math;
+import 'playback_settings_screen.dart';
 
 AudioHandler? audioHandler;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Завантажуємо збережену мову, тему та акцентний колір з диска
+  await SettingsController.instance.loadSettings();
   
   // Запитуємо дозвіл на сповіщення при старті
   await Permission.notification.request();
@@ -32,6 +37,7 @@ void main() async {
   } catch (e, stack) {
     debugPrint('--> [AudioService CRASH]: $e\n$stack');
   }
+
   runApp(const OpenTubeApp());
 }
 
@@ -89,10 +95,12 @@ class MainContainerScreen extends StatefulWidget {
 }
 
 class _MainContainerScreenState extends State<MainContainerScreen> {
-  int _currentIndex = 2;
+  int _currentIndex = 0;
   List<Song> librarySongs = [];
   List<CustomPlaylist> userPlaylists = [];
   bool isLoadingLibrary = true;
+  bool _isShuffle = false;
+  bool _isRepeat = false;
 
   final ValueNotifier<Song?> currentSongNotifier = ValueNotifier<Song?>(null);
   List<Song> currentQueue = [];
@@ -123,12 +131,6 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
 
   Future<void> _loadLocalData() async {
     final prefs = await SharedPreferences.getInstance();
-
-    final savedLang = prefs.getString('app_language');
-    if (savedLang != null) appLanguageNotifier.value = savedLang;
-
-    final savedTheme = prefs.getString('app_theme');
-    if (savedTheme != null) appThemeNotifier.value = savedTheme;
 
     final libraryJson = prefs.getString('local_library_songs');
     if (libraryJson != null) {
@@ -203,7 +205,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         if (title.isEmpty) title = parts.sublist(1).join(' - ').trim();
       } else {
         if (title.isEmpty) title = rawName;
-        if (artist.isEmpty) artist = 'Невідомий виконавець';
+        if (artist.isEmpty) artist = AppLocale.tr('unknown_artist');
       }
     }
 
@@ -363,9 +365,9 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
                   ),
                   child: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
                 ),
-                title: const Text(
-                  'Видалити з медіатеки',
-                  style: TextStyle(
+                title: Text(
+                  AppLocale.tr('delete_from_storage'),
+                  style: const TextStyle(
                     color: Colors.redAccent,
                     fontWeight: FontWeight.w600,
                     fontFamily: 'sans-serif-rounded',
@@ -590,6 +592,17 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
 
   void _playSong(List<Song> songs, int index) async {
     if (index < 0 || index >= songs.length) return;
+    final settings = SettingsController.instance;
+
+    // Плавне згасання поточного аудіо перед завантаженням нового треку
+    if (settings.isFadeEnabled && currentSongNotifier.value != null) {
+      await DspEngine.instance.fadeVolume(
+        from: DspEngine.instance.currentVolume,
+        to: 0.0,
+        durationMs: (settings.fadeOutMs / 2).round(),
+      );
+    }
+
     currentQueue = List.from(songs);
     currentQueueIndex = index;
 
@@ -616,7 +629,6 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
       debugPrint('--> [DSP ExoPlayer] Завантаження: $finalUrl');
       await DspEngine.instance.load(finalUrl);
 
-      // Отримуємо тривалість напряму від нативного ExoPlayer
       await Future.delayed(const Duration(milliseconds: 250));
       final totalMs = await DspEngine.instance.duration();
 
@@ -636,6 +648,17 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         await DspEngine.instance.play();
       }
 
+      // Плавна поява гучності нового треку
+      if (settings.isFadeEnabled) {
+        await DspEngine.instance.fadeVolume(
+          from: 0.0,
+          to: 1.0,
+          durationMs: settings.fadeInMs,
+        );
+      } else {
+        await DspEngine.instance.setVolume(1.0);
+      }
+
       EqualizerController.instance.applyAll();
     } catch (e) {
       debugPrint('--> [Player Playback Error]: $e');
@@ -651,14 +674,83 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
   }
 
   void _playNext() {
-    if (currentQueue.isNotEmpty && currentQueueIndex + 1 < currentQueue.length) {
+    if (currentQueue.isEmpty) return;
+
+    if (_isRepeat && currentQueueIndex >= 0) {
+      _playSong(currentQueue, currentQueueIndex);
+      return;
+    }
+
+    if (_isShuffle && currentQueue.length > 1) {
+      int nextIdx = math.Random().nextInt(currentQueue.length);
+      while (nextIdx == currentQueueIndex && currentQueue.length > 1) {
+        nextIdx = math.Random().nextInt(currentQueue.length);
+      }
+      _playSong(currentQueue, nextIdx);
+      return;
+    }
+
+    if (currentQueueIndex + 1 < currentQueue.length) {
       _playSong(currentQueue, currentQueueIndex + 1);
+    } else if (currentQueue.isNotEmpty) {
+      _playSong(currentQueue, 0);
     }
   }
 
   void _playPrev() {
-    if (currentQueue.isNotEmpty && currentQueueIndex - 1 >= 0) {
+    if (currentQueue.isEmpty) return;
+
+    if (currentQueueIndex - 1 >= 0) {
       _playSong(currentQueue, currentQueueIndex - 1);
+    } else {
+      _playSong(currentQueue, currentQueue.length - 1);
+    }
+  }
+
+  void _handleToggleShuffle() {
+    setState(() {
+      _isShuffle = !_isShuffle;
+    });
+
+    final handler = audioHandler;
+    if (handler != null) {
+      handler.setShuffleMode(
+        _isShuffle ? AudioServiceShuffleMode.all : AudioServiceShuffleMode.none,
+      );
+    }
+  }
+
+  void _handleToggleRepeat() {
+    setState(() {
+      _isRepeat = !_isRepeat;
+    });
+
+    final handler = audioHandler;
+    if (handler != null) {
+      handler.setRepeatMode(
+        _isRepeat ? AudioServiceRepeatMode.one : AudioServiceRepeatMode.none,
+      );
+    }
+  }
+
+  Future<void> _handlePlayPauseToggle() async {
+    if (audioHandler == null) return;
+    final handler = audioHandler!;
+    final settings = SettingsController.instance;
+    final playing = handler.playbackState.value.playing;
+
+    if (playing) {
+      if (settings.isFadeEnabled) {
+        await DspEngine.instance.smoothPause(settings.fadeOutMs);
+      }
+      await handler.pause();
+    } else {
+      await handler.play();
+      if (settings.isFadeEnabled) {
+        await DspEngine.instance.smoothPlay(settings.fadeInMs);
+      } else {
+        await DspEngine.instance.setVolume(1.0);
+      }
     }
   }
 
@@ -673,14 +765,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         builder: (ctx) => PlayerScreen(
           songNotifier: currentSongNotifier,
           audioHandler: handler,
-          onPlayPause: () async {
-            final playing = handler.playbackState.value.playing;
-            if (playing) {
-              await handler.pause();
-            } else {
-              await handler.play();
-            }
-          },
+          onPlayPause: _handlePlayPauseToggle,
           onNext: _playNext,
           onPrev: _playPrev,
           onDownloadCurrent: () {
@@ -689,6 +774,10 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
               _downloadSongToLibrary(cur);
             }
           },
+          onToggleShuffle: _handleToggleShuffle,
+          onToggleRepeat: _handleToggleRepeat,
+          isShuffle: _isShuffle,
+          isRepeat: _isRepeat,
         ),
       ),
     );
@@ -705,45 +794,9 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         onPickFiles: _pickAudioFiles,
         onCreatePlaylist: _showCreatePlaylistDialog,
         onPlaySong: _playSong,
-        onDeleteSong: _deleteLibrarySong,
-        onAddToPlaylist: _showAddToPlaylistDialog,
+        onShowSongMenu: _showLibraryTrackMenu,
         onDeletePlaylist: _deletePlaylist,
-        onShowSongMenu: _showLibraryTrackMenu,
-        onOpenPlaylist: (playlist) {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (ctx) => PlaylistDetailScreen(
-                playlist: playlist,
-                onPlaySong: _playSong,
-                onDeletePlaylist: () {
-                  Navigator.pop(ctx);
-                  setState(() => userPlaylists.remove(playlist));
-                  _savePlaylists();
-                },
-                onAddToPlaylist: _showAddToPlaylistDialog,
-                onDeleteSongFromPlaylist: (songIdx) async {
-                  setState(() => playlist.songs.removeAt(songIdx));
-                  await _savePlaylists();
-                },
-                onDeleteSongFromStorage: (songIdx) async {
-                  final song = playlist.songs[songIdx];
-                  setState(() {
-                    playlist.songs.removeAt(songIdx);
-                    librarySongs.removeWhere((s) => s.path == song.path);
-                  });
-                  await _savePlaylists();
-                  await _saveLibrary();
-                },
-              ),
-            ),
-          );
-        },
-      ),
-      SearchTab(
-        librarySongs: librarySongs,
-        onSelectSong: (songs, index) => _playSong(songs, index),
-        onShowSongMenu: _showLibraryTrackMenu,
+        onOpenPlaylist: (playlist) {},
       ),
       DiscoverTab(
         onPlaySong: (songs, index) => _playSong(songs, index),
@@ -756,7 +809,12 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
     return Scaffold(
       body: Column(
         children: [
-          Expanded(child: pages[_currentIndex]),
+          Expanded(
+            child: IndexedStack(
+              index: _currentIndex,
+              children: pages,
+            ),
+          ),
           MiniPlayer(
             currentSongNotifier: currentSongNotifier,
             onTap: _openPlayerScreen,
@@ -770,15 +828,11 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         onDestinationSelected: (index) => setState(() => _currentIndex = index),
         destinations: [
           NavigationDestination(
-            icon: const Icon(Icons.library_music),
+            icon: const Icon(Icons.library_music_rounded),
             label: AppLocale.tr('media'),
           ),
           NavigationDestination(
-            icon: const Icon(Icons.search),
-            label: AppLocale.tr('search'),
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.language),
+            icon: const Icon(Icons.language_rounded),
             label: AppLocale.tr('discover'),
           ),
           const NavigationDestination(
@@ -786,7 +840,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
             label: 'EQ',
           ),
           NavigationDestination(
-            icon: const Icon(Icons.settings),
+            icon: const Icon(Icons.settings_rounded),
             label: AppLocale.tr('settings'),
           ),
         ],
@@ -794,7 +848,6 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
     );
   }
 }
-
 // -------------------------------------------------------------
 // Вкладка "Інтернет"
 // -------------------------------------------------------------
@@ -1315,6 +1368,59 @@ class SettingsTab extends StatelessWidget {
                         );
                       },
                     ),
+                    Divider(height: 1, color: settings.textColor.withOpacity(0.08)),
+                    ListTile(
+                      leading: Icon(Icons.graphic_eq_rounded, color: settings.accentColor),
+                      title: Text(
+                        settings.tr('playback_settings'),
+                        style: TextStyle(fontWeight: FontWeight.w500, color: settings.textColor),
+                      ),
+                      subtitle: Text(
+                        settings.isFadeEnabled
+                            ? '${(settings.fadeInMs / 1000).toStringAsFixed(1)}s / ${(settings.fadeOutMs / 1000).toStringAsFixed(1)}s'
+                            : 'Вимкнено',
+                        style: TextStyle(color: settings.subTextColor),
+                      ),
+                      trailing: Icon(Icons.chevron_right, color: settings.subTextColor),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const PlaybackSettingsScreen()),
+                        );
+                      },
+                    ),
+                    Divider(height: 1, color: settings.textColor.withOpacity(0.08)),
+                    ListTile(
+                      leading: Icon(Icons.file_upload_rounded, color: settings.accentColor),
+                      title: Text(
+                        'Імпортувати пресет',
+                        style: TextStyle(fontWeight: FontWeight.w500, color: settings.textColor),
+                      ),
+                      subtitle: Text(
+                        'Завантажити пресет із .json файлу',
+                        style: TextStyle(color: settings.subTextColor),
+                      ),
+                      trailing: Icon(Icons.chevron_right, color: settings.subTextColor),
+                      onTap: () async {
+                        final importedName = await EqualizerController.instance.importPresetFromFile();
+                        if (context.mounted) {
+                          if (importedName != null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Пресет "$importedName" успішно імпортовано та активовано :)'),
+                                backgroundColor: Colors.green,
+                              ),
+                            );
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Файл не обрано або сталася помилка читання'),
+                                backgroundColor: Colors.redAccent,
+                              ),
+                            );
+                          }
+                        }
+                      },
+                    ),
                   ],
                 ),
               ),
@@ -1346,10 +1452,9 @@ class SettingsTab extends StatelessWidget {
 }
 
 // -------------------------------------------------------------
-// Вкладки Медіатека та Локальний пошук
+// Вкладка "Моя медіатека" (Стилізований Хаб)
 // -------------------------------------------------------------
-class MediaLibraryTab extends StatelessWidget {
-  final Function(Song, int) onShowSongMenu;
+class MediaLibraryTab extends StatefulWidget {
   final List<Song> librarySongs;
   final List<CustomPlaylist> userPlaylists;
   final ValueNotifier<Song?> currentPlayingSongNotifier;
@@ -1357,14 +1462,12 @@ class MediaLibraryTab extends StatelessWidget {
   final VoidCallback onPickFiles;
   final VoidCallback onCreatePlaylist;
   final Function(List<Song>, int) onPlaySong;
-  final ValueChanged<int> onDeleteSong;
-  final ValueChanged<Song> onAddToPlaylist;
+  final Function(Song, int) onShowSongMenu;
   final ValueChanged<int> onDeletePlaylist;
   final Function(CustomPlaylist) onOpenPlaylist;
 
   const MediaLibraryTab({
     super.key,
-    required this.onShowSongMenu,
     required this.librarySongs,
     required this.userPlaylists,
     required this.currentPlayingSongNotifier,
@@ -1372,245 +1475,1276 @@ class MediaLibraryTab extends StatelessWidget {
     required this.onPickFiles,
     required this.onCreatePlaylist,
     required this.onPlaySong,
-    required this.onDeleteSong,
-    required this.onAddToPlaylist,
+    required this.onShowSongMenu,
     required this.onDeletePlaylist,
     required this.onOpenPlaylist,
   });
 
   @override
-  Widget build(BuildContext context) {
-    final settings = SettingsController.instance;
+  State<MediaLibraryTab> createState() => _MediaLibraryTabState();
+}
 
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        backgroundColor: settings.backgroundColor,
-        appBar: AppBar(
-          title: Text(
-            AppLocale.tr('my_library'),
-            style: TextStyle(
-              color: settings.textColor,
-              fontWeight: FontWeight.bold,
+class _MediaLibraryTabState extends State<MediaLibraryTab> {
+  final GlobalKey<NavigatorState> _nestedNavKey = GlobalKey<NavigatorState>();
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (_nestedNavKey.currentState?.canPop() ?? false) {
+          _nestedNavKey.currentState?.pop();
+        }
+      },
+      child: Navigator(
+        key: _nestedNavKey,
+        onGenerateRoute: (settings) {
+          return MaterialPageRoute(
+            builder: (nestedContext) => _MediaHubHomeView(
+              librarySongs: widget.librarySongs,
+              userPlaylists: widget.userPlaylists,
+              currentPlayingSongNotifier: widget.currentPlayingSongNotifier,
+              isLoading: widget.isLoading,
+              onPickFiles: widget.onPickFiles,
+              onCreatePlaylist: widget.onCreatePlaylist,
+              onPlaySong: widget.onPlaySong,
+              onShowSongMenu: widget.onShowSongMenu,
+              onDeletePlaylist: widget.onDeletePlaylist,
+              onOpenPlaylist: widget.onOpenPlaylist,
             ),
-          ),
-          backgroundColor: settings.bgTheme == BgTheme.white
-              ? settings.accentColor.withOpacity(0.12)
-              : settings.backgroundColor,
-          elevation: 0,
-          iconTheme: IconThemeData(color: settings.textColor),
-          bottom: TabBar(
-            indicatorColor: settings.accentColor,
-            labelColor: settings.accentColor,
-            unselectedLabelColor: settings.subTextColor,
-            tabs: [
-              Tab(text: AppLocale.tr('offline_tracks')),
-              Tab(text: AppLocale.tr('my_playlists')),
-            ],
-          ),
-          actions: [
-            IconButton(
-              icon: Icon(Icons.add_circle_outline, color: settings.textColor),
-              onPressed: () => showModalBottomSheet(
-                context: context,
-                backgroundColor: settings.surfaceColor,
-                shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                ),
-                builder: (ctx) => Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ListTile(
-                        leading: Icon(Icons.audio_file, color: settings.accentColor),
-                        title: Text(
-                          AppLocale.tr('add_local_tracks'),
-                          style: TextStyle(color: settings.textColor),
-                        ),
-                        onTap: () {
-                          Navigator.pop(ctx);
-                          onPickFiles();
-                        },
-                      ),
-                      ListTile(
-                        leading: Icon(Icons.playlist_add, color: settings.accentColor),
-                        title: Text(
-                          AppLocale.tr('create_new_playlist'),
-                          style: TextStyle(color: settings.textColor),
-                        ),
-                        onTap: () {
-                          Navigator.pop(ctx);
-                          onCreatePlaylist();
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-        body: TabBarView(
-          children: [
-            isLoading
-                ? Center(
-                    child: CircularProgressIndicator(color: settings.accentColor),
-                  )
-                : librarySongs.isEmpty
-                    ? Center(
-                        child: Text(
-                          AppLocale.tr('no_offline_tracks'),
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: settings.subTextColor),
-                        ),
-                      )
-                    : ValueListenableBuilder<Song?>(
-                        valueListenable: currentPlayingSongNotifier,
-                        builder: (context, currentPlayingSong, _) {
-                          return ListView.builder(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            itemCount: librarySongs.length,
-                            itemBuilder: (context, index) {
-                              final song = librarySongs[index];
-                              final isCurrent = currentPlayingSong?.path == song.path;
-                              return Container(
-                                margin: const EdgeInsets.only(bottom: 8),
-                                decoration: BoxDecoration(
-                                  color: isCurrent
-                                      ? settings.accentColor.withOpacity(0.18)
-                                      : settings.surfaceColor,
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                                child: ListTile(
-                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                                  leading: ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: Container(
-                                      width: 44,
-                                      height: 44,
-                                      color: settings.surfaceColor,
-                                      child: () {
-                                        final art = song.artworkUrl;
-                                        if (art == null || art.isEmpty) {
-                                          return Icon(Icons.music_note, color: settings.accentColor);
-                                        }
-                                        if (art.startsWith('http')) {
-                                          return Image.network(art, fit: BoxFit.cover);
-                                        }
-                                        return Image.file(File(art), fit: BoxFit.cover);
-                                      }(),
-                                    ),
-                                  ),
-                                  title: Text(
-                                    song.title,
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 14,
-                                      color: isCurrent
-                                          ? settings.accentColor
-                                          : settings.textColor,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  subtitle: Text(
-                                    song.artist,
-                                    style: TextStyle(
-                                      color: settings.subTextColor,
-                                      fontSize: 12,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  trailing: IconButton(
-                                    icon: Icon(Icons.more_vert, color: settings.subTextColor),
-                                    onPressed: () => onShowSongMenu(song, index),
-                                  ),
-                                  onTap: () => onPlaySong(librarySongs, index),
-                                ),
-                              );
-                            },
-                          );
-                        },
-                      ),
-            userPlaylists.isEmpty
-                ? Center(
-                    child: Text(
-                      AppLocale.tr('no_playlists'),
-                      style: TextStyle(color: settings.subTextColor),
-                    ),
-                  )
-                : GridView.builder(
-                    padding: const EdgeInsets.all(16),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      crossAxisSpacing: 16,
-                      mainAxisSpacing: 16,
-                      childAspectRatio: 0.85,
-                    ),
-                    itemCount: userPlaylists.length,
-                    itemBuilder: (context, index) {
-                      final pl = userPlaylists[index];
-                      return GestureDetector(
-                        onTap: () => onOpenPlaylist(pl),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: settings.surfaceColor,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: Container(
-                                  width: double.infinity,
-                                  decoration: BoxDecoration(
-                                    color: settings.bgTheme == BgTheme.white
-                                        ? settings.accentColor.withOpacity(0.12)
-                                        : const Color(0xFF2C2C2C),
-                                    borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-                                  ),
-                                  child: Icon(Icons.queue_music, size: 48, color: settings.accentColor),
-                                ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.all(12.0),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      pl.name,
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 15,
-                                        color: settings.textColor,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      '${pl.songs.length} ${AppLocale.tr('tracks_count')}',
-                                      style: TextStyle(color: settings.subTextColor, fontSize: 12),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
 }
 
-class SearchTab extends StatefulWidget {
+class _MediaHubHomeView extends StatelessWidget {
+  final List<Song> librarySongs;
+  final List<CustomPlaylist> userPlaylists;
+  final ValueNotifier<Song?> currentPlayingSongNotifier;
+  final bool isLoading;
+  final VoidCallback onPickFiles;
+  final VoidCallback onCreatePlaylist;
+  final Function(List<Song>, int) onPlaySong;
+  final Function(Song, int) onShowSongMenu;
+  final ValueChanged<int> onDeletePlaylist;
+  final Function(CustomPlaylist) onOpenPlaylist;
+
+  const _MediaHubHomeView({
+    required this.librarySongs,
+    required this.userPlaylists,
+    required this.currentPlayingSongNotifier,
+    required this.isLoading,
+    required this.onPickFiles,
+    required this.onCreatePlaylist,
+    required this.onPlaySong,
+    required this.onShowSongMenu,
+    required this.onDeletePlaylist,
+    required this.onOpenPlaylist,
+  });
+
+  Widget _buildHubCard({
+    required BuildContext context,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required SettingsController settings,
+    required VoidCallback onTap,
+  }) {
+    final accent = settings.accentColor;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: settings.surfaceColor,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: accent.withOpacity(0.08),
+          width: 1,
+        ),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(
+              children: [
+                Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        accent.withOpacity(0.25),
+                        accent.withOpacity(0.08),
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: accent.withOpacity(0.2), width: 1),
+                  ),
+                  child: Icon(icon, color: accent, size: 28),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 16,
+                          color: settings.textColor,
+                          fontFamily: 'sans-serif-rounded',
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle,
+                        style: TextStyle(
+                          color: settings.subTextColor,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          fontFamily: 'sans-serif-rounded',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.arrow_forward_ios_rounded,
+                  color: settings.subTextColor.withOpacity(0.5),
+                  size: 16,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = SettingsController.instance;
+
+    return AnimatedBuilder(
+      animation: settings,
+      builder: (context, _) {
+        final Map<String, List<Song>> artistMap = {};
+        for (var s in librarySongs) {
+          final name = s.artist.trim().isEmpty 
+              ? AppLocale.tr('unknown_artist') 
+              : s.artist.trim();
+          artistMap.putIfAbsent(name, () => []).add(s);
+        }
+
+        return Scaffold(
+          backgroundColor: settings.backgroundColor,
+          appBar: AppBar(
+            title: Text(
+              AppLocale.tr('my_library'),
+              style: TextStyle(
+                color: settings.textColor,
+                fontWeight: FontWeight.w900,
+                fontSize: 26,
+                fontFamily: 'sans-serif-rounded',
+              ),
+            ),
+            backgroundColor: settings.backgroundColor,
+            elevation: 0,
+            actions: [
+              IconButton(
+                icon: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: settings.accentColor.withOpacity(0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(Icons.add_rounded, color: settings.accentColor, size: 22),
+                ),
+                tooltip: AppLocale.tr('add_local_tracks'),
+                onPressed: onPickFiles,
+              ),
+              const SizedBox(width: 8),
+            ],
+          ),
+          body: isLoading
+              ? Center(child: CircularProgressIndicator(color: settings.accentColor))
+              : ListView(
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                  children: [
+                    _buildHubCard(
+                      context: context,
+                      icon: Icons.music_note_rounded,
+                      title: AppLocale.tr('all_music'),
+                      subtitle: '${librarySongs.length} ${AppLocale.tr('tracks_count')} ${AppLocale.tr('in_storage')}',
+                      settings: settings,
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => AllSongsScreen(
+                              librarySongs: librarySongs,
+                              currentPlayingSongNotifier: currentPlayingSongNotifier,
+                              onPlaySong: onPlaySong,
+                              onShowSongMenu: onShowSongMenu,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    _buildHubCard(
+                      context: context,
+                      icon: Icons.queue_music_rounded,
+                      title: AppLocale.tr('playlists'),
+                      subtitle: '${userPlaylists.length} ${AppLocale.tr('playlists_count')}',
+                      settings: settings,
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (nestedCtx) => PlaylistsOverviewScreen(
+                              userPlaylists: userPlaylists,
+                              onCreatePlaylist: onCreatePlaylist,
+                              onDeletePlaylist: onDeletePlaylist,
+                              onOpenPlaylist: (pl) {
+                                Navigator.of(nestedCtx).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => PlaylistDetailScreen(
+                                      playlist: pl,
+                                      onPlaySong: onPlaySong,
+                                      onDeletePlaylist: () {
+                                        Navigator.pop(nestedCtx);
+                                        onDeletePlaylist(userPlaylists.indexOf(pl));
+                                      },
+                                      onAddToPlaylist: (_) {},
+                                      onDeleteSongFromPlaylist: (songIdx) async {
+                                        pl.songs.removeAt(songIdx);
+                                        final prefs = await SharedPreferences.getInstance();
+                                        await prefs.setString(
+                                          'user_playlists',
+                                          jsonEncode(userPlaylists.map((p) => p.toJson()).toList()),
+                                        );
+                                      },
+                                      onDeleteSongFromStorage: (songIdx) async {
+                                        final song = pl.songs[songIdx];
+                                        pl.songs.removeAt(songIdx);
+                                        librarySongs.removeWhere((s) => s.path == song.path);
+                                        final prefs = await SharedPreferences.getInstance();
+                                        await prefs.setString(
+                                          'user_playlists',
+                                          jsonEncode(userPlaylists.map((p) => p.toJson()).toList()),
+                                        );
+                                        await prefs.setString(
+                                          'local_library_songs',
+                                          jsonEncode(librarySongs.map((s) => s.toJson()).toList()),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    _buildHubCard(
+                      context: context,
+                      icon: Icons.person_rounded,
+                      title: AppLocale.tr('artists'),
+                      subtitle: '${artistMap.keys.length} ${AppLocale.tr('artists_count')}',
+                      settings: settings,
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => ArtistsListScreen(
+                              artistMap: artistMap,
+                              onPlaySong: onPlaySong,
+                              onShowSongMenu: onShowSongMenu,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+        );
+      },
+    );
+  }
+}
+
+// -------------------------------------------------------------
+// Екран: Вся музика
+// -------------------------------------------------------------
+class AllSongsScreen extends StatefulWidget {
+  final List<Song> librarySongs;
+  final ValueNotifier<Song?> currentPlayingSongNotifier;
+  final Function(List<Song>, int) onPlaySong;
+  final Function(Song, int) onShowSongMenu;
+
+  const AllSongsScreen({
+    super.key,
+    required this.librarySongs,
+    required this.currentPlayingSongNotifier,
+    required this.onPlaySong,
+    required this.onShowSongMenu,
+  });
+
+  @override
+  State<AllSongsScreen> createState() => _AllSongsScreenState();
+}
+
+class _AllSongsScreenState extends State<AllSongsScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = SettingsController.instance;
+    final accent = settings.accentColor;
+
+    final filteredSongs = widget.librarySongs.where((song) {
+      if (_searchQuery.isEmpty) return true;
+      final q = _searchQuery.toLowerCase();
+      return song.title.toLowerCase().contains(q) ||
+          song.artist.toLowerCase().contains(q);
+    }).toList();
+
+    String? headerCover;
+    for (var s in widget.librarySongs) {
+      if (s.artworkUrl != null && s.artworkUrl!.isNotEmpty) {
+        headerCover = s.artworkUrl;
+        break;
+      }
+    }
+
+    return Scaffold(
+      backgroundColor: settings.backgroundColor,
+      body: CustomScrollView(
+        key: const PageStorageKey('all_songs_scroll'),
+        slivers: [
+          SliverToBoxAdapter(
+            child: Stack(
+              children: [
+                SizedBox(
+                  height: 310,
+                  width: double.infinity,
+                  child: headerCover != null
+                      ? (headerCover.startsWith('http')
+                          ? Image.network(headerCover, fit: BoxFit.cover)
+                          : Image.file(File(headerCover), fit: BoxFit.cover))
+                      : Container(
+                          color: settings.surfaceColor,
+                          child: Icon(Icons.music_note_rounded, size: 80, color: accent),
+                        ),
+                ),
+                Positioned.fill(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.black.withOpacity(0.4),
+                          Colors.transparent,
+                          settings.backgroundColor.withOpacity(0.55),
+                          settings.backgroundColor.withOpacity(0.9),
+                          settings.backgroundColor,
+                        ],
+                        stops: const [0.0, 0.35, 0.70, 0.88, 1.0],
+                      ),
+                    ),
+                  ),
+                ),
+                SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                    child: Align(
+                      alignment: Alignment.topLeft,
+                      child: Material(
+                        color: Colors.black.withOpacity(0.45),
+                        borderRadius: BorderRadius.circular(16),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () => Navigator.pop(context),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 16),
+                                const SizedBox(width: 6),
+                                Text(
+                                  AppLocale.tr('back'),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                    fontFamily: 'sans-serif-rounded',
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: 16,
+                  right: 16,
+                  bottom: 10,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        AppLocale.tr('all_music'),
+                        style: TextStyle(
+                          color: settings.textColor,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w900,
+                          fontFamily: 'sans-serif-rounded',
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(Icons.music_note_rounded, size: 16, color: settings.subTextColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${widget.librarySongs.length} ${AppLocale.tr('tracks_count')} ${AppLocale.tr('in_storage')}',
+                            style: TextStyle(
+                              color: settings.subTextColor,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              fontFamily: 'sans-serif-rounded',
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Material(
+                            color: settings.surfaceColor,
+                            shape: const CircleBorder(),
+                            child: IconButton(
+                              icon: Icon(Icons.shuffle_rounded, color: accent, size: 22),
+                              onPressed: widget.librarySongs.isEmpty
+                                  ? null
+                                  : () {
+                                      final shuffled = List<Song>.from(widget.librarySongs)..shuffle();
+                                      widget.onPlaySong(shuffled, 0);
+                                    },
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Material(
+                            color: accent,
+                            shape: const CircleBorder(),
+                            child: IconButton(
+                              icon: const Icon(Icons.play_arrow_rounded, color: Colors.black, size: 28),
+                              onPressed: widget.librarySongs.isEmpty
+                                  ? null
+                                  : () => widget.onPlaySong(widget.librarySongs, 0),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: settings.surfaceColor,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: accent.withOpacity(0.12), width: 1),
+                ),
+                child: TextField(
+                  controller: _searchController,
+                  style: TextStyle(color: settings.textColor, fontSize: 14),
+                  onChanged: (val) => setState(() => _searchQuery = val.trim()),
+                  decoration: InputDecoration(
+                    hintText: AppLocale.tr('search_library_hint'),
+                    hintStyle: TextStyle(color: settings.subTextColor, fontSize: 14),
+                    prefixIcon: Icon(Icons.search_rounded, color: accent, size: 20),
+                    suffixIcon: _searchQuery.isNotEmpty
+                        ? IconButton(
+                            icon: Icon(Icons.close_rounded, color: settings.subTextColor, size: 18),
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                          )
+                        : null,
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          filteredSongs.isEmpty
+              ? SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Center(
+                    child: Text(
+                      _searchQuery.isEmpty ? AppLocale.tr('no_offline_tracks') : AppLocale.tr('empty_search'),
+                      style: TextStyle(color: settings.subTextColor, fontFamily: 'sans-serif-rounded'),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                )
+              : SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  sliver: SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) {
+                        final song = filteredSongs[index];
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          decoration: BoxDecoration(
+                            color: settings.surfaceColor,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: accent.withOpacity(0.06), width: 1),
+                          ),
+                          child: ListTile(
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                            leading: ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: Container(
+                                width: 46,
+                                height: 46,
+                                color: settings.backgroundColor,
+                                child: () {
+                                  final art = song.artworkUrl;
+                                  if (art == null || art.isEmpty) {
+                                    return Icon(Icons.music_note_rounded, color: accent);
+                                  }
+                                  if (art.startsWith('http')) {
+                                    return Image.network(art, fit: BoxFit.cover);
+                                  }
+                                  return Image.file(File(art), fit: BoxFit.cover);
+                                }(),
+                              ),
+                            ),
+                            title: Text(
+                              song.title,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 14,
+                                color: settings.textColor,
+                                fontFamily: 'sans-serif-rounded',
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              song.artist.isEmpty ? AppLocale.tr('unknown_artist') : song.artist,
+                              style: TextStyle(
+                                color: settings.subTextColor,
+                                fontSize: 12,
+                                fontFamily: 'sans-serif-rounded',
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: IconButton(
+                              icon: Icon(Icons.more_vert_rounded, color: settings.subTextColor, size: 22),
+                              onPressed: () => widget.onShowSongMenu(song, widget.librarySongs.indexOf(song)),
+                            ),
+                            onTap: () {
+                              final originalIndex = widget.librarySongs.indexOf(song);
+                              widget.onPlaySong(widget.librarySongs, originalIndex >= 0 ? originalIndex : index);
+                            },
+                          ),
+                        );
+                      },
+                      childCount: filteredSongs.length,
+                    ),
+                  ),
+                ),
+          const SliverToBoxAdapter(child: SizedBox(height: 90)),
+        ],
+      ),
+    );
+  }
+}
+
+// -------------------------------------------------------------
+// Екран: Плейлисти
+// -------------------------------------------------------------
+class PlaylistsOverviewScreen extends StatelessWidget {
+  final List<CustomPlaylist> userPlaylists;
+  final VoidCallback onCreatePlaylist;
+  final Function(CustomPlaylist) onOpenPlaylist;
+  final ValueChanged<int> onDeletePlaylist;
+  final void Function(int, String)? onRenamePlaylist;
+
+  const PlaylistsOverviewScreen({
+    super.key,
+    required this.userPlaylists,
+    required this.onCreatePlaylist,
+    required this.onOpenPlaylist,
+    required this.onDeletePlaylist,
+    this.onRenamePlaylist,
+  });
+
+  void _showEditDialog(BuildContext context, int index, CustomPlaylist pl) {
+    final controller = TextEditingController(text: pl.name);
+    final settings = SettingsController.instance;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: settings.surfaceColor,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(
+          'Редагувати плейлист',
+          style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: TextStyle(color: settings.textColor),
+          decoration: InputDecoration(
+            hintText: 'Введіть нову назву',
+            hintStyle: TextStyle(color: settings.subTextColor),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: settings.accentColor),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Скасувати', style: TextStyle(color: settings.subTextColor)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: settings.accentColor,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () async {
+              final newName = controller.text.trim();
+              if (newName.isNotEmpty) {
+                pl.name = newName;
+                if (onRenamePlaylist != null) {
+                  onRenamePlaylist!(index, newName);
+                } else {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setString(
+                    'user_playlists',
+                    jsonEncode(userPlaylists.map((p) => p.toJson()).toList()),
+                  );
+                }
+              }
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+            child: const Text('Зберегти', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showPlaylistOptions(BuildContext context, int index, CustomPlaylist pl) {
+    final settings = SettingsController.instance;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: settings.surfaceColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: settings.subTextColor.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    pl.name,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: settings.textColor,
+                      fontFamily: 'sans-serif-rounded',
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: settings.accentColor.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(Icons.edit_rounded, color: settings.accentColor),
+                ),
+                title: Text(
+                  'Редагувати назву',
+                  style: TextStyle(
+                    color: settings.textColor,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'sans-serif-rounded',
+                  ),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showEditDialog(context, index, pl);
+                },
+              ),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                ),
+                title: const Text(
+                  'Видалити плейлист',
+                  style: TextStyle(
+                    color: Colors.redAccent,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'sans-serif-rounded',
+                  ),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onDeletePlaylist(index);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = SettingsController.instance;
+    final accent = settings.accentColor;
+
+    return Scaffold(
+      backgroundColor: settings.backgroundColor,
+      appBar: AppBar(
+        backgroundColor: settings.backgroundColor,
+        elevation: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back_ios_new_rounded, color: settings.textColor),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text(
+          AppLocale.tr('playlists'),
+          style: TextStyle(
+            color: settings.textColor,
+            fontWeight: FontWeight.w900,
+            fontFamily: 'sans-serif-rounded',
+          ),
+        ),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.add_rounded, color: accent, size: 28),
+            tooltip: AppLocale.tr('create_playlist'),
+            onPressed: onCreatePlaylist,
+          ),
+          const SizedBox(width: 6),
+        ],
+      ),
+      body: userPlaylists.isEmpty
+          ? Center(
+              child: Text(
+                AppLocale.tr('no_playlists'),
+                style: TextStyle(color: settings.subTextColor, fontFamily: 'sans-serif-rounded'),
+              ),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              itemCount: userPlaylists.length,
+              itemBuilder: (context, index) {
+                final pl = userPlaylists[index];
+
+                String? firstArt;
+                for (var s in pl.songs) {
+                  if (s.artworkUrl != null && s.artworkUrl!.isNotEmpty) {
+                    firstArt = s.artworkUrl;
+                    break;
+                  }
+                }
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration: BoxDecoration(
+                    color: settings.surfaceColor,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: accent.withOpacity(0.08), width: 1),
+                  ),
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    leading: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        color: accent.withOpacity(0.14),
+                        child: firstArt != null
+                            ? (firstArt.startsWith('http')
+                                ? Image.network(firstArt, fit: BoxFit.cover)
+                                : Image.file(File(firstArt), fit: BoxFit.cover))
+                            : Icon(Icons.queue_music_rounded, color: accent, size: 26),
+                      ),
+                    ),
+                    title: Text(
+                      pl.name,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                        color: settings.textColor,
+                        fontFamily: 'sans-serif-rounded',
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${pl.songs.length} ${AppLocale.tr('tracks_count')}',
+                      style: TextStyle(color: settings.subTextColor, fontSize: 12),
+                    ),
+                    trailing: IconButton(
+                      icon: Icon(Icons.more_vert_rounded, color: settings.subTextColor),
+                      onPressed: () => _showPlaylistOptions(context, index, pl),
+                    ),
+                    onTap: () => onOpenPlaylist(pl),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+// -------------------------------------------------------------
+// Екран: Виконавці
+// -------------------------------------------------------------
+// -------------------------------------------------------------
+// Екран: Список виконавців
+// -------------------------------------------------------------
+class ArtistsListScreen extends StatelessWidget {
+  final Map<String, List<Song>> artistMap;
+  final Function(List<Song>, int) onPlaySong;
+  final Function(Song, int) onShowSongMenu;
+
+  const ArtistsListScreen({
+    super.key,
+    required this.artistMap,
+    required this.onPlaySong,
+    required this.onShowSongMenu,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = SettingsController.instance;
+    final accent = settings.accentColor;
+    final artists = artistMap.keys.toList();
+
+    return Scaffold(
+      backgroundColor: settings.backgroundColor,
+      appBar: AppBar(
+        backgroundColor: settings.backgroundColor,
+        elevation: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back_ios_new_rounded, color: settings.textColor),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text(
+          AppLocale.tr('artists'),
+          style: TextStyle(
+            color: settings.textColor,
+            fontWeight: FontWeight.w900,
+            fontFamily: 'sans-serif-rounded',
+          ),
+        ),
+      ),
+      body: artists.isEmpty
+          ? Center(
+              child: Text(
+                AppLocale.tr('empty_search'),
+                style: TextStyle(color: settings.subTextColor, fontFamily: 'sans-serif-rounded'),
+              ),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              itemCount: artists.length,
+              itemBuilder: (context, index) {
+                final artistName = artists[index];
+                final songs = artistMap[artistName] ?? [];
+
+                String? artistCover;
+                for (var s in songs) {
+                  if (s.artworkUrl != null && s.artworkUrl!.isNotEmpty) {
+                    artistCover = s.artworkUrl;
+                    break;
+                  }
+                }
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration: BoxDecoration(
+                    color: settings.surfaceColor,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: accent.withOpacity(0.08), width: 1),
+                  ),
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    leading: ClipOval(
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        color: accent.withOpacity(0.14),
+                        child: artistCover != null
+                            ? (artistCover.startsWith('http')
+                                ? Image.network(artistCover, fit: BoxFit.cover)
+                                : Image.file(File(artistCover), fit: BoxFit.cover))
+                            : Icon(Icons.person_rounded, color: accent, size: 26),
+                      ),
+                    ),
+                    title: Text(
+                      artistName,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                        color: settings.textColor,
+                        fontFamily: 'sans-serif-rounded',
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${songs.length} ${AppLocale.tr('tracks_count')}',
+                      style: TextStyle(color: settings.subTextColor, fontSize: 12),
+                    ),
+                    trailing: Icon(Icons.arrow_forward_ios_rounded, color: settings.subTextColor.withOpacity(0.5), size: 16),
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => ArtistDetailScreen(
+                            artistName: artistName,
+                            artistSongs: songs,
+                            onPlaySong: onPlaySong,
+                            onShowSongMenu: onShowSongMenu,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+// -------------------------------------------------------------
+// Екран: Деталі виконавця (Градієнтна шапка + треки цього артиста)
+// -------------------------------------------------------------
+class ArtistDetailScreen extends StatelessWidget {
+  final String artistName;
+  final List<Song> artistSongs;
+  final Function(List<Song>, int) onPlaySong;
+  final Function(Song, int) onShowSongMenu;
+
+  const ArtistDetailScreen({
+    super.key,
+    required this.artistName,
+    required this.artistSongs,
+    required this.onPlaySong,
+    required this.onShowSongMenu,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = SettingsController.instance;
+    final accent = settings.accentColor;
+
+    String? headerCover;
+    for (var s in artistSongs) {
+      if (s.artworkUrl != null && s.artworkUrl!.isNotEmpty) {
+        headerCover = s.artworkUrl;
+        break;
+      }
+    }
+
+    return Scaffold(
+      backgroundColor: settings.backgroundColor,
+      body: CustomScrollView(
+        slivers: [
+          SliverToBoxAdapter(
+            child: Stack(
+              children: [
+                SizedBox(
+                  height: 310,
+                  width: double.infinity,
+                  child: headerCover != null
+                      ? (headerCover.startsWith('http')
+                          ? Image.network(headerCover, fit: BoxFit.cover)
+                          : Image.file(File(headerCover), fit: BoxFit.cover))
+                      : Container(
+                          color: settings.surfaceColor,
+                          child: Icon(Icons.person_rounded, size: 80, color: accent),
+                        ),
+                ),
+                Positioned.fill(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.black.withOpacity(0.4),
+                          Colors.transparent,
+                          settings.backgroundColor.withOpacity(0.55),
+                          settings.backgroundColor.withOpacity(0.9),
+                          settings.backgroundColor,
+                        ],
+                        stops: const [0.0, 0.35, 0.70, 0.88, 1.0],
+                      ),
+                    ),
+                  ),
+                ),
+                SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                    child: Align(
+                      alignment: Alignment.topLeft,
+                      child: Material(
+                        color: Colors.black.withOpacity(0.45),
+                        borderRadius: BorderRadius.circular(16),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () => Navigator.pop(context),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 16),
+                                const SizedBox(width: 6),
+                                Text(
+                                  AppLocale.tr('back'),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                    fontFamily: 'sans-serif-rounded',
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: 16,
+                  right: 16,
+                  bottom: 10,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        artistName.isEmpty ? AppLocale.tr('unknown_artist') : artistName,
+                        style: TextStyle(
+                          color: settings.textColor,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w900,
+                          fontFamily: 'sans-serif-rounded',
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(Icons.music_note_rounded, size: 16, color: settings.subTextColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${artistSongs.length} ${AppLocale.tr('tracks_count')}',
+                            style: TextStyle(
+                              color: settings.subTextColor,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              fontFamily: 'sans-serif-rounded',
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Material(
+                            color: settings.surfaceColor,
+                            shape: const CircleBorder(),
+                            child: IconButton(
+                              icon: Icon(Icons.shuffle_rounded, color: accent, size: 22),
+                              onPressed: artistSongs.isEmpty
+                                  ? null
+                                  : () {
+                                      final shuffled = List<Song>.from(artistSongs)..shuffle();
+                                      onPlaySong(shuffled, 0);
+                                    },
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Material(
+                            color: accent,
+                            shape: const CircleBorder(),
+                            child: IconButton(
+                              icon: const Icon(Icons.play_arrow_rounded, color: Colors.black, size: 28),
+                              onPressed: artistSongs.isEmpty
+                                  ? null
+                                  : () => onPlaySong(artistSongs, 0),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 8)),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            sliver: SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, index) {
+                  final song = artistSongs[index];
+
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    decoration: BoxDecoration(
+                      color: settings.surfaceColor,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: accent.withOpacity(0.06), width: 1),
+                    ),
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                      leading: ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          width: 46,
+                          height: 46,
+                          color: settings.backgroundColor,
+                          child: () {
+                            final art = song.artworkUrl;
+                            if (art == null || art.isEmpty) {
+                              return Icon(Icons.music_note_rounded, color: accent);
+                            }
+                            if (art.startsWith('http')) {
+                              return Image.network(art, fit: BoxFit.cover);
+                            }
+                            return Image.file(File(art), fit: BoxFit.cover);
+                          }(),
+                        ),
+                      ),
+                      title: Text(
+                        song.title,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14,
+                          color: settings.textColor,
+                          fontFamily: 'sans-serif-rounded',
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        song.artist.isEmpty ? AppLocale.tr('unknown_artist') : song.artist,
+                        style: TextStyle(
+                          color: settings.subTextColor,
+                          fontSize: 12,
+                          fontFamily: 'sans-serif-rounded',
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: IconButton(
+                        icon: Icon(Icons.more_vert_rounded, color: settings.subTextColor, size: 22),
+                        onPressed: () => onShowSongMenu(song, index),
+                      ),
+                      onTap: () => onPlaySong(artistSongs, index),
+                    ),
+                  );
+                },
+                childCount: artistSongs.length,
+              ),
+            ),
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 90)),
+        ],
+      ),
+    );
+  }
+}
+
+const BorderSide borderSideNone = BorderSide.none;
+
+// -------------------------------------------------------------
+// Екран: Деталі плейлиста (М'який градієнт шапки + меню дій)
+// -------------------------------------------------------------
+
+
+class SearchTab extends StatelessWidget {
   final List<Song> librarySongs;
   final Function(List<Song>, int) onSelectSong;
   final Function(Song, int) onShowSongMenu;
@@ -1623,83 +2757,505 @@ class SearchTab extends StatefulWidget {
   });
 
   @override
-  State<SearchTab> createState() => _SearchTabState();
-}
-
-class _SearchTabState extends State<SearchTab> {
-  String _query = '';
-
-  @override
   Widget build(BuildContext context) {
-    final filtered = widget.librarySongs
-        .where((s) => s.title.toLowerCase().contains(_query.toLowerCase()) ||
-                      s.artist.toLowerCase().contains(_query.toLowerCase()))
-        .toList();
-
     final settings = SettingsController.instance;
-
     return Scaffold(
       backgroundColor: settings.backgroundColor,
       appBar: AppBar(
-        title: Text(
-          AppLocale.tr('search'),
-          style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold),
-        ),
+        title: Text(AppLocale.tr('search'), style: TextStyle(color: settings.textColor)),
         backgroundColor: settings.backgroundColor,
         elevation: 0,
-        iconTheme: IconThemeData(color: settings.textColor),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            TextField(
-              onChanged: (val) => setState(() => _query = val),
-              style: TextStyle(color: settings.textColor),
-              decoration: InputDecoration(
-                hintText: AppLocale.tr('search_library_hint'),
-                hintStyle: TextStyle(color: settings.subTextColor),
-                prefixIcon: Icon(Icons.search, color: settings.accentColor),
-                filled: true,
-                fillColor: settings.surfaceColor,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: borderSideNone,
+      body: Center(
+        child: Text(AppLocale.tr('search'), style: TextStyle(color: settings.subTextColor)),
+      ),
+    );
+  }
+}
+
+// -------------------------------------------------------------
+// Екран: Деталі плейлиста
+// -------------------------------------------------------------
+class PlaylistDetailScreen extends StatefulWidget {
+  final CustomPlaylist playlist;
+  final Function(List<Song>, int) onPlaySong;
+  final VoidCallback onDeletePlaylist;
+  final Function(Song) onAddToPlaylist;
+  final Future<void> Function(int) onDeleteSongFromPlaylist;
+  final Future<void> Function(int) onDeleteSongFromStorage;
+  final Future<void> Function(String)? onRenamePlaylist;
+
+  const PlaylistDetailScreen({
+    super.key,
+    required this.playlist,
+    required this.onPlaySong,
+    required this.onDeletePlaylist,
+    required this.onAddToPlaylist,
+    required this.onDeleteSongFromPlaylist,
+    required this.onDeleteSongFromStorage,
+    this.onRenamePlaylist,
+  });
+
+  @override
+  State<PlaylistDetailScreen> createState() => _PlaylistDetailScreenState();
+}
+
+class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
+  void _editPlaylistName(BuildContext context) {
+    final controller = TextEditingController(text: widget.playlist.name);
+    final settings = SettingsController.instance;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: settings.surfaceColor,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(
+          AppLocale.tr('create_new_playlist'),
+          style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: TextStyle(color: settings.textColor),
+          decoration: InputDecoration(
+            hintText: AppLocale.tr('create_new_playlist'),
+            hintStyle: TextStyle(color: settings.subTextColor),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: settings.accentColor),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(AppLocale.tr('cancel'), style: TextStyle(color: settings.subTextColor)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: settings.accentColor,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () async {
+              final newName = controller.text.trim();
+              if (newName.isNotEmpty) {
+                setState(() {
+                  widget.playlist.name = newName;
+                });
+                if (widget.onRenamePlaylist != null) {
+                  await widget.onRenamePlaylist!(newName);
+                }
+              }
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+            child: Text(
+              AppLocale.tr('save'),
+              style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showTopMenu(BuildContext context) {
+    final settings = SettingsController.instance;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: settings.surfaceColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 14.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 14),
+                decoration: BoxDecoration(
+                  color: settings.subTextColor.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: filtered.isEmpty
-                  ? Center(
-                      child: Text(
-                        AppLocale.tr('empty_search'),
-                        style: TextStyle(color: settings.subTextColor),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: settings.accentColor.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(Icons.edit_rounded, color: settings.accentColor),
+                ),
+                title: Text(
+                  AppLocale.tr('create_new_playlist'),
+                  style: TextStyle(
+                    color: settings.textColor,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'sans-serif-rounded',
+                  ),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _editPlaylistName(context);
+                },
+              ),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                ),
+                title: Text(
+                  AppLocale.tr('delete_playlist'),
+                  style: const TextStyle(
+                    color: Colors.redAccent,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'sans-serif-rounded',
+                  ),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  widget.onDeletePlaylist();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showTrackMenu(BuildContext context, Song song, int index) {
+    final settings = SettingsController.instance;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: settings.surfaceColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16.0, horizontal: 8.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        width: 44,
+                        height: 44,
+                        color: settings.backgroundColor,
+                        child: () {
+                          final art = song.artworkUrl;
+                          if (art == null || art.isEmpty) {
+                            return Icon(Icons.music_note_rounded, color: settings.accentColor);
+                          }
+                          if (art.startsWith('http')) {
+                            return Image.network(art, fit: BoxFit.cover);
+                          }
+                          return Image.file(File(art), fit: BoxFit.cover);
+                        }(),
                       ),
-                    )
-                  : ListView.builder(
-                      itemCount: filtered.length,
-                      itemBuilder: (context, index) {
-                        final song = filtered[index];
-                        final originalIndex = widget.librarySongs.indexOf(song);
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            song.title,
+                            style: TextStyle(
+                              color: settings.textColor,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                              fontFamily: 'sans-serif-rounded',
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            song.artist.isEmpty ? AppLocale.tr('unknown_artist') : song.artist,
+                            style: TextStyle(color: settings.subTextColor, fontSize: 12),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Divider(height: 1, color: settings.textColor.withOpacity(0.08)),
+              const SizedBox(height: 6),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orangeAccent.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.playlist_remove_rounded, color: Colors.orangeAccent),
+                ),
+                title: Text(
+                  AppLocale.tr('delete_playlist'),
+                  style: TextStyle(
+                    color: settings.textColor,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'sans-serif-rounded',
+                  ),
+                ),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await widget.onDeleteSongFromPlaylist(index);
+                  setState(() {});
+                },
+              ),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.delete_forever_rounded, color: Colors.redAccent),
+                ),
+                title: Text(
+                  AppLocale.tr('delete_from_storage'),
+                  style: const TextStyle(
+                    color: Colors.redAccent,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'sans-serif-rounded',
+                  ),
+                ),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await widget.onDeleteSongFromStorage(index);
+                  setState(() {});
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = SettingsController.instance;
+    final accent = settings.accentColor;
+
+    String? headerCover;
+    for (var s in widget.playlist.songs) {
+      if (s.artworkUrl != null && s.artworkUrl!.isNotEmpty) {
+        headerCover = s.artworkUrl;
+        break;
+      }
+    }
+
+    return Scaffold(
+      backgroundColor: settings.backgroundColor,
+      body: CustomScrollView(
+        slivers: [
+          SliverToBoxAdapter(
+            child: Stack(
+              children: [
+                SizedBox(
+                  height: 310,
+                  width: double.infinity,
+                  child: headerCover != null
+                      ? (headerCover.startsWith('http')
+                          ? Image.network(headerCover, fit: BoxFit.cover)
+                          : Image.file(File(headerCover), fit: BoxFit.cover))
+                      : Container(
+                          color: settings.surfaceColor,
+                          child: Icon(Icons.queue_music_rounded, size: 80, color: accent),
+                        ),
+                ),
+                Positioned.fill(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.black.withOpacity(0.4),
+                          Colors.transparent,
+                          settings.backgroundColor.withOpacity(0.55),
+                          settings.backgroundColor.withOpacity(0.9),
+                          settings.backgroundColor,
+                        ],
+                        stops: const [0.0, 0.35, 0.70, 0.88, 1.0],
+                      ),
+                    ),
+                  ),
+                ),
+                SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                    child: Align(
+                      alignment: Alignment.topLeft,
+                      child: Material(
+                        color: Colors.black.withOpacity(0.45),
+                        borderRadius: BorderRadius.circular(16),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () => Navigator.pop(context),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 16),
+                                const SizedBox(width: 6),
+                                Text(
+                                  AppLocale.tr('back'),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                    fontFamily: 'sans-serif-rounded',
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: 16,
+                  right: 16,
+                  bottom: 10,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        widget.playlist.name,
+                        style: TextStyle(
+                          color: settings.textColor,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w900,
+                          fontFamily: 'sans-serif-rounded',
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(Icons.music_note_rounded, size: 16, color: settings.subTextColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${widget.playlist.songs.length} ${AppLocale.tr('tracks_count')}',
+                            style: TextStyle(
+                              color: settings.subTextColor,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              fontFamily: 'sans-serif-rounded',
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Material(
+                            color: settings.surfaceColor,
+                            shape: const CircleBorder(),
+                            child: IconButton(
+                              icon: Icon(Icons.shuffle_rounded, color: accent, size: 22),
+                              onPressed: widget.playlist.songs.isEmpty
+                                  ? null
+                                  : () {
+                                      final shuffled = List<Song>.from(widget.playlist.songs)..shuffle();
+                                      widget.onPlaySong(shuffled, 0);
+                                    },
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Material(
+                            color: accent,
+                            shape: const CircleBorder(),
+                            child: IconButton(
+                              icon: const Icon(Icons.play_arrow_rounded, color: Colors.black, size: 28),
+                              onPressed: widget.playlist.songs.isEmpty
+                                  ? null
+                                  : () => widget.onPlaySong(widget.playlist.songs, 0),
+                            ),
+                          ),
+                          const Spacer(),
+                          Material(
+                            color: settings.surfaceColor,
+                            shape: const CircleBorder(),
+                            child: IconButton(
+                              icon: Icon(Icons.more_vert_rounded, color: settings.textColor, size: 22),
+                              onPressed: () => _showTopMenu(context),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 8)),
+          widget.playlist.songs.isEmpty
+              ? SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Center(
+                    child: Text(
+                      AppLocale.tr('no_offline_tracks'),
+                      style: TextStyle(color: settings.subTextColor, fontFamily: 'sans-serif-rounded'),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                )
+              : SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  sliver: SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) {
+                        final song = widget.playlist.songs[index];
 
                         return Container(
                           margin: const EdgeInsets.only(bottom: 8),
                           decoration: BoxDecoration(
                             color: settings.surfaceColor,
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: accent.withOpacity(0.06), width: 1),
                           ),
                           child: ListTile(
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                             leading: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: BorderRadius.circular(10),
                               child: Container(
-                                width: 44,
-                                height: 44,
-                                color: settings.surfaceColor,
+                                width: 46,
+                                height: 46,
+                                color: settings.backgroundColor,
                                 child: () {
                                   final art = song.artworkUrl;
                                   if (art == null || art.isEmpty) {
-                                    return Icon(Icons.music_note, color: settings.accentColor);
+                                    return Icon(Icons.music_note_rounded, color: accent);
                                   }
                                   if (art.startsWith('http')) {
                                     return Image.network(art, fit: BoxFit.cover);
@@ -1711,81 +3267,39 @@ class _SearchTabState extends State<SearchTab> {
                             title: Text(
                               song.title,
                               style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 14,
                                 color: settings.textColor,
-                                fontWeight: FontWeight.w600,
+                                fontFamily: 'sans-serif-rounded',
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: Text(
-                              song.artist,
-                              style: TextStyle(color: settings.subTextColor),
+                              song.artist.isEmpty ? AppLocale.tr('unknown_artist') : song.artist,
+                              style: TextStyle(
+                                color: settings.subTextColor,
+                                fontSize: 12,
+                                fontFamily: 'sans-serif-rounded',
+                              ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                             trailing: IconButton(
-                              icon: Icon(
-                                Icons.more_vert,
-                                color: settings.subTextColor,
-                              ),
-                              onPressed: () => widget.onShowSongMenu(song, originalIndex),
+                              icon: Icon(Icons.more_vert_rounded, color: settings.subTextColor, size: 22),
+                              onPressed: () => _showTrackMenu(context, song, index),
                             ),
-                            onTap: () => widget.onSelectSong(filtered, index),
+                            onTap: () => widget.onPlaySong(widget.playlist.songs, index),
                           ),
                         );
                       },
+                      childCount: widget.playlist.songs.length,
                     ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-const BorderSide borderSideNone = BorderSide.none;
-
-class PlaylistDetailScreen extends StatelessWidget {
-  final CustomPlaylist playlist;
-  final Function(List<Song>, int) onPlaySong;
-  final VoidCallback onDeletePlaylist;
-  final Function(Song) onAddToPlaylist;
-  final Future<void> Function(int) onDeleteSongFromPlaylist;
-  final Future<void> Function(int) onDeleteSongFromStorage;
-
-  const PlaylistDetailScreen({
-    super.key,
-    required this.playlist,
-    required this.onPlaySong,
-    required this.onDeletePlaylist,
-    required this.onAddToPlaylist,
-    required this.onDeleteSongFromPlaylist,
-    required this.onDeleteSongFromStorage,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(playlist.name),
-        actions: [
-          IconButton(icon: const Icon(Icons.delete_outline, color: Colors.redAccent), onPressed: onDeletePlaylist),
+                  ),
+                ),
+          const SliverToBoxAdapter(child: SizedBox(height: 90)),
         ],
       ),
-      body: playlist.songs.isEmpty
-          ? Center(child: Text(AppLocale.tr('no_offline_tracks'), style: const TextStyle(color: Colors.grey)))
-          : ListView.builder(
-              itemCount: playlist.songs.length,
-              itemBuilder: (context, index) {
-                final song = playlist.songs[index];
-                return ListTile(
-                  leading: const Icon(Icons.music_note, color: Colors.orangeAccent),
-                  title: Text(song.title),
-                  subtitle: Text(song.artist),
-                  onTap: () => onPlaySong(playlist.songs, index),
-                );
-              },
-            ),
     );
   }
 }

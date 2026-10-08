@@ -63,31 +63,113 @@ class EqualizerScreen extends StatelessWidget {
     );
   }
 
-  void _showDeletePresetDialog(BuildContext context, EqualizerController eq, SettingsController settings, String name) {
+  void _showRenamePresetDialog(BuildContext context, EqualizerController eq, SettingsController settings, String oldName) {
+    final controller = TextEditingController(text: oldName);
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: settings.surfaceColor,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text(settings.tr('delete_preset'), style: TextStyle(color: settings.textColor)),
-        content: Text('"$name"', style: TextStyle(color: settings.subTextColor)),
+        title: Text('Змінити назву', style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: TextStyle(color: settings.textColor),
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: settings.backgroundColor,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+          ),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: Text(settings.tr('cancel'), style: TextStyle(color: settings.subTextColor)),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            style: FilledButton.styleFrom(backgroundColor: settings.accentColor),
             onPressed: () {
-              eq.deleteCustomPreset(name);
-              Navigator.pop(ctx);
+              final newName = controller.text.trim();
+              if (newName.isNotEmpty) {
+                eq.renameCustomPreset(oldName, newName);
+                Navigator.pop(ctx);
+              }
             },
-            child: Text(
-              settings.tr('delete_preset'),
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
+            child: const Text('Зберегти', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
           ),
         ],
+      ),
+    );
+  }
+
+  void _showCustomPresetActionSheet(BuildContext context, EqualizerController eq, SettingsController settings, String name) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: settings.surfaceColor,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16.0, horizontal: 8.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: settings.subTextColor.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Text(
+                name,
+                style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                leading: Icon(Icons.download_rounded, color: settings.accentColor),
+                title: Text('Зберегти у файл (Downloads)', style: TextStyle(color: settings.textColor, fontWeight: FontWeight.w600)),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final ok = await eq.exportCustomPresetToFile(name);
+                  if (context.mounted && ok) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Пресет успішно експортовано у файл :)'), backgroundColor: Colors.green),
+                    );
+                  }
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.sync_rounded, color: settings.accentColor),
+                title: Text('Перезаписати поточними налаштуваннями', style: TextStyle(color: settings.textColor, fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  eq.overwriteCustomPreset(name);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Пресет "$name" оновлено :)'), backgroundColor: Colors.green),
+                  );
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.edit_rounded, color: settings.accentColor),
+                title: Text('Змінити назву', style: TextStyle(color: settings.textColor, fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showRenamePresetDialog(context, eq, settings, name);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                title: const Text('Видалити', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  eq.deleteCustomPreset(name);
+                },
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -133,7 +215,6 @@ class EqualizerScreen extends StatelessWidget {
           body: ListView(
             padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
             children: [
-              // Рядок вибору та збереження пресетів
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
@@ -158,30 +239,27 @@ class EqualizerScreen extends StatelessWidget {
                       final isSelected = eq.currentPresetName == name;
                       final isCustom = eq.customPresets.containsKey(name);
 
+                      final chip = InputChip(
+                        label: Text(name),
+                        selected: isSelected,
+                        selectedColor: accent,
+                        backgroundColor: settings.surfaceColor,
+                        labelStyle: TextStyle(
+                          color: isSelected ? Colors.black : settings.textColor,
+                          fontWeight: FontWeight.bold,
+                          fontFamily: 'sans-serif-rounded',
+                        ),
+                        onSelected: (_) => eq.selectPreset(name),
+                      );
+
                       return Padding(
                         padding: const EdgeInsets.only(right: 8.0),
-                        child: InputChip(
-                          label: Text(name),
-                          selected: isSelected,
-                          selectedColor: accent,
-                          backgroundColor: settings.surfaceColor,
-                          labelStyle: TextStyle(
-                            color: isSelected ? Colors.black : settings.textColor,
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'sans-serif-rounded',
-                          ),
-                          onSelected: (_) => eq.selectPreset(name),
-                          onDeleted: isCustom
-                              ? () => _showDeletePresetDialog(context, eq, settings, name)
-                              : null,
-                          deleteIcon: isCustom
-                              ? Icon(
-                                  Icons.close_rounded,
-                                  size: 16,
-                                  color: isSelected ? Colors.black87 : settings.subTextColor,
-                                )
-                              : null,
-                        ),
+                        child: isCustom
+                            ? GestureDetector(
+                                onLongPress: () => _showCustomPresetActionSheet(context, eq, settings, name),
+                                child: chip,
+                              )
+                            : chip,
                       );
                     }),
                   ],
@@ -266,7 +344,6 @@ class EqualizerScreen extends StatelessWidget {
                 ),
                 child: Column(
                   children: [
-                    // Ширина сцени (Stereo Width)
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -290,7 +367,6 @@ class EqualizerScreen extends StatelessWidget {
                     ),
                     const Divider(height: 16),
 
-                    // Глибина кімнати (Reverb)
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -314,7 +390,6 @@ class EqualizerScreen extends StatelessWidget {
                     ),
                     const Divider(height: 16),
 
-                    // Ексайтер (Exciter)
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -338,7 +413,6 @@ class EqualizerScreen extends StatelessWidget {
                     ),
                     const Divider(height: 16),
 
-                    // Ламповий драйв (Tube Drive)
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [

@@ -119,6 +119,11 @@ class MainActivity : AudioServiceActivity() {
                     player.pause()
                     result.success(null)
                 }
+                "setVolume" -> {
+                    val vol = (call.argument<Number>("volume")?.toDouble() ?: 1.0).toFloat()
+                    player.volume = vol.coerceIn(0.0f, 1.0f)
+                    result.success(null)
+                }
                 "seekTo" -> {
                     val ms = (call.argument<Number>("ms") ?: 0).toLong()
                     player.seekTo(ms)

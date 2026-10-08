@@ -43,10 +43,13 @@ class Song {
 }
 
 class CustomPlaylist {
-  final String name;
+  String name;
   final List<Song> songs;
 
-  CustomPlaylist({required this.name, required this.songs});
+  CustomPlaylist({
+    required this.name,
+    required this.songs,
+  });
 
   Map<String, dynamic> toJson() => {
         'name': name,
@@ -258,6 +261,55 @@ class AppLocale {
       'pl': 'Nic nie znaleziono :(',
       'de': 'Nichts gefunden :(',
       'es': 'No se encontró nada :(',
+    },
+    'all_music': {
+      'uk': 'Вся музика',
+      'en': 'All Music',
+      'pl': 'Wszystka muzyka',
+      'de': 'Alle Musik',
+      'es': 'Toda la música',
+    },
+    'artists': {
+      'uk': 'Виконавці',
+      'en': 'Artists',
+      'pl': 'Wykonawcy',
+      'de': 'Künstler',
+      'es': 'Artistas',
+    },
+    'playlists': {
+      'uk': 'Плейлисти',
+      'en': 'Playlists',
+      'pl': 'Playlisty',
+      'de': 'Wiedergabelisten',
+      'es': 'Listas de reproducción',
+    },
+    'in_storage': {
+      'uk': 'у памʼяті',
+      'en': 'in storage',
+      'pl': 'w pamięci',
+      'de': 'im Speicher',
+      'es': 'en memoria',
+    },
+    'playlists_count': {
+      'uk': 'списків відтворення',
+      'en': 'playlists',
+      'pl': 'list odtwarzania',
+      'de': 'Wiedergabelisten',
+      'es': 'listas',
+    },
+    'artists_count': {
+      'uk': 'артистів',
+      'en': 'artists',
+      'pl': 'artystów',
+      'de': 'Künstler',
+      'es': 'artistas',
+    },
+    'back': {
+      'uk': 'Назад',
+      'en': 'Back',
+      'pl': 'Wstecz',
+      'de': 'Zurück',
+      'es': 'Atrás',
     },
   };
 
