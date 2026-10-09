@@ -24,6 +24,11 @@ data class DspConfig(
     val exciterAmount: Float = 0f,
     val stereoWidth: Float = 0.42f,
     val reverbMix: Float = 0.42f,
+    val punchAmount: Float = 0.6f,   // удар бочки 0..1
+    val airDb: Float = 2.5f,         // "повітря" high-shelf, дБ (0 = вимкнено)
+    val lateScale: Float = 0.5f,     // хвіст реверба 0..1
+    val centerCut: Float = 0.6f,     // віддаленість боків 0..1
+    val echoAmount: Float = 0.3f,    // ехо 0..1
     val limiterCeilingDb: Float = -1.5f,
 ) {
     companion object {
@@ -47,6 +52,11 @@ data class DspConfig(
                 exciterAmount = f("exciterAmount", 0f),
                 stereoWidth = f("stereoWidth", 0.42f),
                 reverbMix = f("reverbMix", 0.42f),
+                punchAmount = f("punchAmount", 0.6f),
+                airDb = f("airDb", 2.5f),
+                lateScale = f("lateScale", 0.5f),
+                centerCut = f("centerCut", 0.6f),
+                echoAmount = f("echoAmount", 0.3f),
                 limiterCeilingDb = f("limiterCeilingDb", -1.5f),
             )
         }
@@ -150,6 +160,10 @@ class AllpassFilter(size: Int) {
     }
 }
 
+// Хвіст реверба: менший DAMP = світліший (більше "повітря"), більший FEEDBACK = довший
+private const val REVERB_DAMP = 0.53
+private const val REVERB_FEEDBACK = 0.80
+
 class SmallRoomReverb {
     private val combL = arrayOf(CombFilter(1116), CombFilter(1188), CombFilter(1277), CombFilter(1356))
     private val combR = arrayOf(CombFilter(1139), CombFilter(1211), CombFilter(1300), CombFilter(1379))
@@ -164,8 +178,8 @@ class SmallRoomReverb {
         }
 
         val input = (inL + inR) * 0.02
-        val damp = 0.53
-        val roomFeedback = 0.75
+        val damp = REVERB_DAMP
+        val roomFeedback = REVERB_FEEDBACK
 
         var outL = 0.0
         var outR = 0.0
@@ -253,26 +267,23 @@ class EarlyReflections(private val fs: Double) {
     private val bufR = DoubleArray(size)
     private var w = 0
     private fun ms(v: Double) = (v / 1000.0 * fs).toInt().coerceIn(1, size - 1)
-    private val tapsL = intArrayOf(ms(7.3), ms(12.1), ms(17.9), ms(24.7))
-    private val tapsR = intArrayOf(ms(8.9), ms(13.7), ms(19.3), ms(27.1))
-    private val gains = doubleArrayOf(0.50, 0.40, 0.30, 0.22)
+    private val tapsL = intArrayOf(ms(7.3), ms(12.1), ms(17.9), ms(24.7), ms(31.3), ms(38.9))
+    private val tapsR = intArrayOf(ms(8.9), ms(13.7), ms(19.3), ms(27.1), ms(33.1), ms(41.3))
+    private val gains = doubleArrayOf(0.50, 0.40, 0.30, 0.22, 0.16, 0.12)
     private val lpCoef = 1.0 - exp(-2.0 * PI * 8000.0 / fs) // м'який зріз верхів відбиттів
     private val hpCoef = 1.0 - exp(-2.0 * PI * 250.0 / fs)  // низи не відбиваємо: менше каламуті
     private var loL = 0.0
     private var loR = 0.0
     private var lpL = 0.0
     private var lpR = 0.0
-    // Скільки центру (вокал) прибираємо з відбиттів: 0 = всі інструменти, 1 = лише боки.
-    // Чим більше, тим дальші боки й тим сухіший та ближчий вокал.
-    private val centerCut = 0.6
-
-    fun process(l: Double, r: Double, amount: Double, out: DoubleArray) {
+    // centerCut: скільки центру (вокал) прибираємо з відбиттів (0 = все, 1 = лише боки)
+    fun process(l: Double, r: Double, amount: Double, centerCut: Double, out: DoubleArray) {
         val m = (l + r) * 0.5
         bufL[w] = l - m * centerCut
         bufR[w] = r - m * centerCut
         var eL = 0.0
         var eR = 0.0
-        for (i in 0..3) {
+        for (i in gains.indices) {
             val iL = (w - tapsL[i] + size) % size
             val iR = (w - tapsR[i] + size) % size
             if (i % 2 == 0) {
@@ -292,6 +303,43 @@ class EarlyReflections(private val fs: Double) {
 
     fun reset() {
         bufL.fill(0.0); bufR.fill(0.0); w = 0; lpL = 0.0; lpR = 0.0; loL = 0.0; loR = 0.0
+    }
+}
+
+/** Стерео-ехо (пінг-понг): повтори ~85 і ~115 мс, приглушені й без баса. */
+class EchoDelay(fs: Double) {
+    private val nL = (fs * 0.085).toInt().coerceAtLeast(2)
+    private val nR = (fs * 0.115).toInt().coerceAtLeast(2)
+    private val bufL = DoubleArray(nL)
+    private val bufR = DoubleArray(nR)
+    private var iL = 0
+    private var iR = 0
+    private var lpL = 0.0
+    private var lpR = 0.0
+    private var hp = 0.0
+    private val lpCoef = 1.0 - exp(-2.0 * PI * 4500.0 / fs) // повтори м'якші за оригінал
+    private val hpCoef = 1.0 - exp(-2.0 * PI * 200.0 / fs)  // без баса в ехо
+    private val feedback = 0.38                              // скільки повторів лишається
+
+    fun process(l: Double, r: Double, amount: Double, out: DoubleArray) {
+        val m = (l + r) * 0.5
+        hp += (m - hp) * hpCoef
+        val x = m - hp
+        val dL = bufL[iL]
+        val dR = bufR[iR]
+        lpL += (dL - lpL) * lpCoef
+        lpR += (dR - lpR) * lpCoef
+        bufL[iL] = x + lpR * feedback // перехресний зв'язок: ехо стрибає між вухами
+        bufR[iR] = x + lpL * feedback
+        iL = (iL + 1) % nL
+        iR = (iR + 1) % nR
+        out[0] = l + lpL * amount * 0.6
+        out[1] = r + lpR * amount * 0.6
+    }
+
+    fun reset() {
+        bufL.fill(0.0); bufR.fill(0.0); iL = 0; iR = 0
+        lpL = 0.0; lpR = 0.0; hp = 0.0
     }
 }
 
@@ -331,6 +379,9 @@ class PunchEnhancer(private val fs: Double) {
         lpL.reset(); lpR.reset(); fast = 0.0; slow = 0.0
     }
 }
+
+// Частота "повітря": нижче = чутніше, але ближче до сибілянтів
+private const val AIR_FREQ = 8500.0
 
 class DspProcessor : BaseAudioProcessor() {
 
@@ -374,14 +425,10 @@ class DspProcessor : BaseAudioProcessor() {
     private val widthScale = 0.6
     // Ранні відбиття: скільки слайдера йде на "винесення сцени" (більше = швидше досягає повної сили)
     private val erGain = 3.0f
-    // Хвіст реверба: частка слайдера (менше = менше "ванни")
-    private val lateScale = 0.5
-    // Удар низів (бочка): 0 = вимкнено, 0.6 = помірно, 1.0 = сильно
-    private val punchAmount = 0.6
     private var punch = PunchEnhancer(44100.0)
     private val punchOut = DoubleArray(2)
-    // "Повітря": high-shelf від 11 кГц, у дБ (0 = вимкнено)
-    private val airDb = 2.5
+    private var echo = EchoDelay(44100.0)
+    private val echoOut = DoubleArray(2)
     private val airShelf = arrayOf(Biquad(), Biquad())
     private var inEncoding = C.ENCODING_PCM_16BIT
     private var bytesPerSample = 2
@@ -413,6 +460,7 @@ class DspProcessor : BaseAudioProcessor() {
         limiter = LookaheadLimiter(fs)
         early = EarlyReflections(fs)
         punch = PunchEnhancer(fs)
+        echo = EchoDelay(fs)
         delaySamples = (fs * 0.012).roundToInt().coerceIn(10, 900)
         // Рівно 280 мікросекунд (симетрична затримка голови)
         xfeedDelay = (fs * 0.00028).roundToInt().coerceIn(4, 64)
@@ -439,7 +487,7 @@ class DspProcessor : BaseAudioProcessor() {
             }
             spatialHp[ch].configure(BandType.HIGH_PASS, fs, 180.0, 0.0, 0.707)
             exciterHp[ch].configure(BandType.HIGH_PASS, fs, 4000.0, 0.0, 0.707)
-            airShelf[ch].configure(BandType.HIGH_SHELF, fs, 11000.0, airDb, 0.707)
+            airShelf[ch].configure(BandType.HIGH_SHELF, fs, AIR_FREQ, c.airDb.toDouble(), 0.6)
             // Фільтр Bauer кросфіду: плавний спад вище 750 Гц на протилежне вухо
             crossfeedLp[ch].configure(BandType.LOW_PASS, fs, 750.0, 0.0, 0.6)
         }
@@ -467,7 +515,7 @@ class DspProcessor : BaseAudioProcessor() {
                 for (ch in 0..1) {
                     var x = sample[ch] * preamp
                     for (bq in eq[ch]) x = bq.process(x)
-                    if (airDb != 0.0) x = airShelf[ch].process(x)
+                    if (c.airDb > 0f) x = airShelf[ch].process(x)
 
                     // Ламповий драйв (асиметричний tanh, 50% wet)
                     if (c.tubeDrive > 0f) {
@@ -482,8 +530,8 @@ class DspProcessor : BaseAudioProcessor() {
                 }
 
                 // 1b. Удар низів (підсилює атаку бочки)
-                if (punchAmount > 0.0) {
-                    punch.process(sample[0], sample[1], punchAmount, punchOut)
+                if (c.punchAmount > 0f) {
+                    punch.process(sample[0], sample[1], c.punchAmount.toDouble(), punchOut)
                     sample[0] = punchOut[0]
                     sample[1] = punchOut[1]
                 }
@@ -520,17 +568,24 @@ class DspProcessor : BaseAudioProcessor() {
                 }
 
                 // 3b. Ранні відбиття (глибина), керуються тим самим слайдером реверберації
-                val erAmount = (c.reverbMix * erGain).coerceIn(0f, 1f).toDouble()
+                val erAmount = (c.reverbMix * erGain).coerceIn(0f, 1.6f).toDouble()
                 if (erAmount > 0.0) {
-                    early.process(sample[0], sample[1], erAmount, erOut)
+                    early.process(sample[0], sample[1], erAmount, c.centerCut.toDouble(), erOut)
                     sample[0] = erOut[0]
                     sample[1] = erOut[1]
                 }
 
                 // 4. Small Room Reverb (32-42% кімнати)
-                roomReverb.process(sample[0], sample[1], c.reverbMix.toDouble() * lateScale, revOut)
+                roomReverb.process(sample[0], sample[1], c.reverbMix.toDouble() * c.lateScale, revOut)
                 sample[0] = revOut[0]
                 sample[1] = revOut[1]
+
+                // 4b. Ехо (пінг-понг)
+                if (c.echoAmount > 0f) {
+                    echo.process(sample[0], sample[1], c.echoAmount.toDouble(), echoOut)
+                    sample[0] = echoOut[0]
+                    sample[1] = echoOut[1]
+                }
 
                 // 5. Lookahead-лімітер (~4 мс затримки)
                 limiter.process(sample[0], sample[1], ceiling, limOut)
@@ -558,6 +613,7 @@ class DspProcessor : BaseAudioProcessor() {
         limiter.reset()
         early.reset()
         punch.reset()
+        echo.reset()
         delayBufferL.fill(0.0)
         delayBufferR.fill(0.0)
         delayPtr = 0

@@ -13,6 +13,39 @@ class EqualizerScreen extends StatelessWidget {
     return '${freq.toInt()}';
   }
 
+  Widget _tuningRow(
+    SettingsController settings,
+    Color accent,
+    bool enabled,
+    String title,
+    String valueText,
+    double value,
+    double min,
+    double max,
+    ValueChanged<double> onChanged,
+  ) {
+    return Column(
+      children: [
+        const Divider(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(title, style: TextStyle(color: settings.textColor, fontWeight: FontWeight.bold)),
+            Text(valueText, style: TextStyle(color: accent, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        Slider(
+          value: value.clamp(min, max),
+          min: min,
+          max: max,
+          activeColor: accent,
+          inactiveColor: settings.backgroundColor,
+          onChanged: enabled ? onChanged : null,
+        ),
+      ],
+    );
+  }
+
   void _showSavePresetDialog(BuildContext context, EqualizerController eq, SettingsController settings) {
     final controller = TextEditingController();
     showDialog(
@@ -434,6 +467,22 @@ class EqualizerScreen extends StatelessWidget {
                       inactiveColor: settings.backgroundColor,
                       onChanged: eq.isEnabled ? eq.setTubeDrive : null,
                     ),
+
+                    // Тонке налаштування
+                    _tuningRow(settings, accent, eq.isEnabled, 'Удар бочки',
+                        '${(eq.punchAmount * 100).toInt()}%', eq.punchAmount, 0.0, 1.0, eq.setPunchAmount),
+                    _tuningRow(settings, accent, eq.isEnabled, 'Повітря (верхи)',
+                        '+${eq.airDb.toStringAsFixed(1)} дБ', eq.airDb, 0.0, 8.0, eq.setAirDb),
+                    _tuningRow(settings, accent, eq.isEnabled, 'Хвіст реверберації',
+                        '${(eq.lateScale * 100).toInt()}%', eq.lateScale, 0.0, 1.0, eq.setLateScale),
+                    _tuningRow(settings, accent, eq.isEnabled, 'Віддаленість боків',
+                        '${(eq.centerCut * 100).toInt()}%', eq.centerCut, 0.0, 1.0, eq.setCenterCut),
+                    _tuningRow(settings, accent, eq.isEnabled, 'Ехо',
+                        '${(eq.echoAmount * 100).toInt()}%', eq.echoAmount, 0.0, 1.0, eq.setEchoAmount),
+                    _tuningRow(settings, accent, eq.isEnabled, 'Преамп',
+                        '${eq.preampDb > 0 ? "+" : ""}${eq.preampDb.toStringAsFixed(1)} дБ', eq.preampDb, -6.0, 6.0, eq.setPreampDb),
+                    _tuningRow(settings, accent, eq.isEnabled, 'Стеля лімітера',
+                        '${eq.limiterCeilingDb.toStringAsFixed(1)} дБ', eq.limiterCeilingDb, -6.0, 0.0, eq.setLimiterCeiling),
                   ],
                 ),
               ),

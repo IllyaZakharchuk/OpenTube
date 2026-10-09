@@ -45,6 +45,11 @@ class DspConfig {
   final double stereoWidth;
   final double reverbMix;
   final double limiterCeilingDb;
+  final double punchAmount; // удар бочки 0..1
+  final double airDb; // "повітря" (high-shelf), дБ
+  final double lateScale; // хвіст реверберації 0..1
+  final double centerCut; // віддаленість боків 0..1
+  final double echoAmount; // ехо 0..1
 
   const DspConfig({
     this.enabled = true,
@@ -55,6 +60,11 @@ class DspConfig {
     this.stereoWidth = 0.34,
     this.reverbMix = 0.32,
     this.limiterCeilingDb = -1.5,
+    this.punchAmount = 0.6,
+    this.airDb = 2.5,
+    this.lateScale = 0.5,
+    this.centerCut = 0.6,
+    this.echoAmount = 0.3,
   });
 
   factory DspConfig.flat10() => DspConfig(
@@ -73,6 +83,11 @@ class DspConfig {
     double? stereoWidth,
     double? reverbMix,
     double? limiterCeilingDb,
+    double? punchAmount,
+    double? airDb,
+    double? lateScale,
+    double? centerCut,
+    double? echoAmount,
   }) =>
       DspConfig(
         enabled: enabled ?? this.enabled,
@@ -83,6 +98,11 @@ class DspConfig {
         stereoWidth: stereoWidth ?? this.stereoWidth,
         reverbMix: reverbMix ?? this.reverbMix,
         limiterCeilingDb: limiterCeilingDb ?? this.limiterCeilingDb,
+        punchAmount: punchAmount ?? this.punchAmount,
+        airDb: airDb ?? this.airDb,
+        lateScale: lateScale ?? this.lateScale,
+        centerCut: centerCut ?? this.centerCut,
+        echoAmount: echoAmount ?? this.echoAmount,
       );
 
   Map<String, dynamic> toMap() => {
@@ -94,6 +114,11 @@ class DspConfig {
         'stereoWidth': stereoWidth,
         'reverbMix': reverbMix,
         'limiterCeilingDb': limiterCeilingDb,
+        'punchAmount': punchAmount,
+        'airDb': airDb,
+        'lateScale': lateScale,
+        'centerCut': centerCut,
+        'echoAmount': echoAmount,
       };
 }
 
@@ -131,7 +156,7 @@ class DspEngine {
     try {
       await _ch.invokeMethod('setVolume', {'volume': _currentVolume});
     } catch (_) {
-      // Якщо нативної підтримки setVolume поки немає в Kotlin, 
+      // Якщо нативної підтримки setVolume поки немає в Kotlin,
       // виклик не ламатиме виконання
     }
   }
