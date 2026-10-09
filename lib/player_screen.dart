@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:audio_service/audio_service.dart';
 import 'models.dart';
 import 'settings_controller.dart';
+import 'listen_tracker.dart';
 
 class PlayerScreen extends StatefulWidget {
   final ValueNotifier<Song?> songNotifier;
@@ -15,6 +16,7 @@ class PlayerScreen extends StatefulWidget {
   final VoidCallback onDownloadCurrent;
   final VoidCallback onToggleShuffle;
   final VoidCallback onToggleRepeat;
+  final Future<bool> Function()? onToggleFavorite;
   final bool isShuffle;
   final bool isRepeat;
 
@@ -28,6 +30,7 @@ class PlayerScreen extends StatefulWidget {
     required this.onDownloadCurrent,
     required this.onToggleShuffle,
     required this.onToggleRepeat,
+    this.onToggleFavorite,
     this.isShuffle = false,
     this.isRepeat = false,
   });
@@ -38,6 +41,7 @@ class PlayerScreen extends StatefulWidget {
 
 class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMixin {
   bool isPlaying = false;
+  bool isFavorite = false;
   late bool isShuffleActive;
   late bool isRepeatActive;
   Duration duration = const Duration(minutes: 3, seconds: 30);
@@ -57,6 +61,8 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
     isShuffleActive = widget.isShuffle;
     isRepeatActive = widget.isRepeat;
     isPlaying = widget.audioHandler.playbackState.value.playing;
+    widget.songNotifier.addListener(_syncFavorite);
+    _syncFavorite();
 
     _rotationController = AnimationController(
       vsync: this,
@@ -137,8 +143,24 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
     widget.onPlayPause();
   }
 
+  Future<void> _syncFavorite() async {
+    final song = widget.songNotifier.value;
+    final liked = song == null ? false : await ListenTracker.instance.isFavorite(song);
+    if (mounted) setState(() => isFavorite = liked);
+  }
+
+  Future<void> _toggleFavorite() async {
+    final song = widget.songNotifier.value;
+    if (song == null) return;
+    final liked = widget.onToggleFavorite != null
+        ? await widget.onToggleFavorite!()
+        : await ListenTracker.instance.toggleFavorite(song);
+    if (mounted) setState(() => isFavorite = liked);
+  }
+
   @override
   void dispose() {
+    widget.songNotifier.removeListener(_syncFavorite);
     _playbackSub?.cancel();
     _mediaItemSub?.cancel();
     _rotationController.dispose();
@@ -537,6 +559,24 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                                         Icons.shuffle_rounded,
                                         size: 22,
                                         color: isShuffleActive ? accent : settings.textColor.withOpacity(0.55),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                Material(
+                                  color: isFavorite
+                                      ? accent.withOpacity(0.25)
+                                      : settings.surfaceColor.withOpacity(0.6),
+                                  shape: const CircleBorder(),
+                                  child: InkWell(
+                                    customBorder: const CircleBorder(),
+                                    onTap: _toggleFavorite,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(10.0),
+                                      child: Icon(
+                                        isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                                        size: 22,
+                                        color: isFavorite ? accent : settings.textColor.withOpacity(0.55),
                                       ),
                                     ),
                                   ),

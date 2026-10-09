@@ -19,11 +19,15 @@ dependencies:
   path_provider: ^2.1.2
   audiotags: ^1.4.5
   permission_handler: ^12.0.3
+  sqflite: ^2.4.1
+  path: ^1.9.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  test: ^1.25.7
   flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.13.1
 
 flutter:
   uses-material-design: true

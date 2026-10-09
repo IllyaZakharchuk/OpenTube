@@ -29,6 +29,8 @@ data class DspConfig(
     val lateScale: Float = 0.5f,     // хвіст реверба 0..1
     val centerCut: Float = 0.6f,     // віддаленість боків 0..1
     val echoAmount: Float = 0.3f,    // ехо 0..1
+    val limiterReleaseMs: Float = 80f,   // реліз лімітера, мс
+    val limiterLookaheadMs: Float = 4f,  // lookahead лімітера, мс
     val limiterCeilingDb: Float = -1.5f,
 ) {
     companion object {
@@ -57,6 +59,8 @@ data class DspConfig(
                 lateScale = f("lateScale", 0.5f),
                 centerCut = f("centerCut", 0.6f),
                 echoAmount = f("echoAmount", 0.3f),
+                limiterReleaseMs = f("limiterReleaseMs", 80f),
+                limiterLookaheadMs = f("limiterLookaheadMs", 4f),
                 limiterCeilingDb = f("limiterCeilingDb", -1.5f),
             )
         }
@@ -210,8 +214,8 @@ class SmallRoomReverb {
  * Lookahead-лімітер (~4 мс): знижує гучність ПЕРЕД піком, тож без спотворень і кліппінгу.
  * Мін-вікно + ковзне середнє гарантують, що вихід не перевищує стелю.
  */
-class LookaheadLimiter(fs: Double) {
-    private val n = (fs * 0.004).roundToInt().coerceAtLeast(8)
+class LookaheadLimiter(private val fs: Double, val lookaheadMs: Double = 4.0) {
+    private val n = (fs * lookaheadMs / 1000.0).roundToInt().coerceAtLeast(8)
     private val d = n - 1
     private val cap = n + 1
     private val dl = DoubleArray(d)
@@ -226,7 +230,11 @@ class LookaheadLimiter(fs: Double) {
     private var mi = 0
     private var mSum = n.toDouble()
     private var g = 1.0
-    private val rel = 1.0 - exp(-1.0 / (0.08 * fs)) // реліз ~80 мс
+    private var rel = 1.0 - exp(-1.0 / (0.08 * fs)) // реліз за замовчуванням ~80 мс
+
+    fun setRelease(ms: Double) {
+        rel = 1.0 - exp(-1.0 / (max(ms, 1.0) * 0.001 * fs))
+    }
 
     fun process(l: Double, r: Double, ceiling: Double, out: DoubleArray) {
         val peak = max(abs(l), abs(r))
@@ -470,6 +478,10 @@ class DspProcessor : BaseAudioProcessor() {
     }
 
     private fun refresh(c: DspConfig) {
+        if (limiter.lookaheadMs != c.limiterLookaheadMs.toDouble()) {
+            limiter = LookaheadLimiter(fs, c.limiterLookaheadMs.toDouble())
+        }
+        limiter.setRelease(c.limiterReleaseMs.toDouble())
         val active = c.bands.filter { it.enabled }
         var maxBoostDb = 0f
         for (b in active) {

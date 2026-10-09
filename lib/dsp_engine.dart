@@ -50,6 +50,8 @@ class DspConfig {
   final double lateScale; // хвіст реверберації 0..1
   final double centerCut; // віддаленість боків 0..1
   final double echoAmount; // ехо 0..1
+  final double limiterReleaseMs; // реліз лімітера, мс
+  final double limiterLookaheadMs; // lookahead лімітера, мс
 
   const DspConfig({
     this.enabled = true,
@@ -65,6 +67,8 @@ class DspConfig {
     this.lateScale = 0.5,
     this.centerCut = 0.6,
     this.echoAmount = 0.3,
+    this.limiterReleaseMs = 80,
+    this.limiterLookaheadMs = 4,
   });
 
   factory DspConfig.flat10() => DspConfig(
@@ -88,6 +92,8 @@ class DspConfig {
     double? lateScale,
     double? centerCut,
     double? echoAmount,
+    double? limiterReleaseMs,
+    double? limiterLookaheadMs,
   }) =>
       DspConfig(
         enabled: enabled ?? this.enabled,
@@ -103,6 +109,8 @@ class DspConfig {
         lateScale: lateScale ?? this.lateScale,
         centerCut: centerCut ?? this.centerCut,
         echoAmount: echoAmount ?? this.echoAmount,
+        limiterReleaseMs: limiterReleaseMs ?? this.limiterReleaseMs,
+        limiterLookaheadMs: limiterLookaheadMs ?? this.limiterLookaheadMs,
       );
 
   Map<String, dynamic> toMap() => {
@@ -119,6 +127,8 @@ class DspConfig {
         'lateScale': lateScale,
         'centerCut': centerCut,
         'echoAmount': echoAmount,
+        'limiterReleaseMs': limiterReleaseMs,
+        'limiterLookaheadMs': limiterLookaheadMs,
       };
 }
 

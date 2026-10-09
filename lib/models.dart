@@ -13,6 +13,7 @@ class Song {
   final bool isOnline;
   final String? artworkUrl;
   final String? trackId;
+  int playCount;
 
   Song({
     required this.title,
@@ -21,6 +22,7 @@ class Song {
     this.isOnline = false,
     this.artworkUrl,
     this.trackId,
+    this.playCount = 0,
   });
 
   Map<String, dynamic> toJson() => {
@@ -39,7 +41,40 @@ class Song {
         isOnline: json['isOnline'] ?? false,
         artworkUrl: json['artworkUrl'] ?? json['thumbnail'],
         trackId: json['trackId'] ?? json['id'] ?? json['videoId'],
+        playCount: (json['playCount'] as num?)?.toInt() ?? 0,
       );
+
+  /// Creates a copy of this song, overriding only the provided fields.
+  Song copyWith({
+    String? title,
+    String? path,
+    String? artist,
+    bool? isOnline,
+    String? artworkUrl,
+    String? trackId,
+    int? playCount,
+  }) {
+    return Song(
+      title: title ?? this.title,
+      path: path ?? this.path,
+      artist: artist ?? this.artist,
+      isOnline: isOnline ?? this.isOnline,
+      artworkUrl: artworkUrl ?? this.artworkUrl,
+      trackId: trackId ?? this.trackId,
+      playCount: playCount ?? this.playCount,
+    );
+  }
+
+  /// Sorts `songs` in place (descending by playCount) and returns it.
+  static List<Song> sortByPlayCount(List<Song> songs) {
+    final sorted = List<Song>.from(songs);
+    sorted.sort((a, b) {
+      final aCount = a.playCount;
+      final bCount = b.playCount;
+      return bCount.compareTo(aCount);
+    });
+    return sorted;
+  }
 }
 
 class CustomPlaylist {
@@ -155,7 +190,8 @@ class AppLocale {
       'en': 'No offline tracks :(\nAdd files or save from Web',
       'pl': 'Brak utworów offline :(\nDodaj pliki lub pobierz z sieci',
       'de': 'Keine Offline-Titel :(\nDateien hinzufügen oder herunterladen',
-      'es': 'Sin canciones sin conexión :(\nAñade archivos o descarga de la red',
+      'es':
+          'Sin canciones sin conexión :(\nAñade archivos o descarga de la red',
     },
     'no_playlists': {
       'uk': 'У тебе ще немає плейлистів :)',
@@ -325,6 +361,10 @@ class AppLocale {
 class MusicService {
   static const String baseUrl = 'http://130.61.92.248:8055';
 
+  /// Last.fm track.getSimilar / artist.getSimilar. Empty = skip client Last.fm
+  /// (the Oracle /api/recommend still uses LASTFM_API_KEY on the server).
+  static const String lastFmApiKey = String.fromEnvironment('LASTFM_API_KEY');
+
   static Future<List<Song>> search(String query, {int limit = 20}) async {
     try {
       final uri = Uri.parse('$baseUrl/api/search').replace(queryParameters: {
@@ -335,14 +375,16 @@ class MusicService {
       if (res.statusCode == 200) {
         final data = jsonDecode(utf8.decode(res.bodyBytes));
         final List list = data['results'] ?? [];
-        return list.map((item) => Song(
-          title: item['title'] ?? '',
-          path: '',
-          artist: item['uploader'] ?? '',
-          isOnline: true,
-          artworkUrl: item['thumbnail'],
-          trackId: item['id'],
-        )).toList();
+        return list
+            .map((item) => Song(
+                  title: item['title'] ?? '',
+                  path: '',
+                  artist: item['uploader'] ?? '',
+                  isOnline: true,
+                  artworkUrl: item['thumbnail'],
+                  trackId: item['id'],
+                ))
+            .toList();
       }
       return [];
     } catch (e) {
@@ -361,5 +403,136 @@ class MusicService {
 
   static String getStreamUrl(String trackId) {
     return '$baseUrl/api/audio/stream?id=$trackId';
+  }
+
+  static List<Song> _songsFromResults(dynamic data) {
+    final List list =
+        data is List ? data : (data['results'] ?? data['tracks'] ?? []);
+    return list.map((item) {
+      final map = item as Map<String, dynamic>;
+      return Song(
+        title: map['title'] ?? '',
+        path: '',
+        artist: map['uploader'] ?? map['artist'] ?? '',
+        isOnline: true,
+        artworkUrl: map['thumbnail'] ?? map['artworkUrl'],
+        trackId: map['id'] ?? map['videoId'] ?? map['trackId'],
+      );
+    }).toList();
+  }
+
+  static Future<List<Song>> getRadio(String videoId, {int limit = 15}) async {
+    try {
+      final uri = Uri.parse('$baseUrl/api/radio').replace(queryParameters: {
+        'id': videoId,
+        'limit': limit.toString(),
+      });
+      final res = await http.get(uri).timeout(const Duration(seconds: 20));
+      if (res.statusCode == 200) {
+        return _songsFromResults(jsonDecode(utf8.decode(res.bodyBytes)));
+      }
+    } catch (e) {
+      debugPrint('Radio error: $e');
+    }
+    return [];
+  }
+
+  /// YouTube Music radio + Last.fm + Deezer, ranked on the Oracle box.
+  static Future<List<Song>> fetchPersonalized({
+    required List<Map<String, dynamic>> seeds,
+    required Set<String> excludeIds,
+    int limit = 20,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/recommend');
+    final res = await http
+        .post(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'seeds': seeds,
+            'exclude_ids': excludeIds.toList(),
+            'limit': limit,
+          }),
+        )
+        .timeout(const Duration(seconds: 45));
+    if (res.statusCode != 200) {
+      throw Exception('recommend HTTP ${res.statusCode}');
+    }
+    return _songsFromResults(jsonDecode(utf8.decode(res.bodyBytes)));
+  }
+
+  static Future<List<Song>> lastFmSimilarTracks({
+    required String artist,
+    required String title,
+    int limit = 8,
+  }) async {
+    if (lastFmApiKey.isEmpty || artist.trim().isEmpty || title.trim().isEmpty) {
+      return [];
+    }
+    try {
+      final uri = Uri.parse('https://ws.audioscrobbler.com/2.0/').replace(
+        queryParameters: {
+          'method': 'track.getsimilar',
+          'artist': artist,
+          'track': title,
+          'api_key': lastFmApiKey,
+          'format': 'json',
+          'limit': '$limit',
+        },
+      );
+      final res = await http.get(uri).timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return [];
+      final data = jsonDecode(utf8.decode(res.bodyBytes));
+      final List tracks =
+          (((data as Map?)?['similartracks'] as Map?)?['track'] as List?) ?? [];
+      final out = <Song>[];
+      for (final t in tracks.take(limit)) {
+        final name = (t as Map)['name'] as String? ?? '';
+        final art = (t['artist'] as Map?)?['name'] as String? ?? '';
+        if (name.isEmpty || art.isEmpty) continue;
+        final found = await search('$art $name', limit: 1);
+        out.addAll(found);
+      }
+      return out;
+    } catch (e) {
+      debugPrint('Last.fm similar error: $e');
+      return [];
+    }
+  }
+
+  /// Deezer has no key. We search the track, then related artists, then YouTube.
+  static Future<List<Song>> deezerSimilar({
+    required String artist,
+    required String title,
+  }) async {
+    try {
+      final q = Uri.encodeQueryComponent('$artist $title');
+      final searchRes = await http
+          .get(Uri.parse('https://api.deezer.com/search/track?q=$q'))
+          .timeout(const Duration(seconds: 12));
+      if (searchRes.statusCode != 200) return [];
+      final data = jsonDecode(utf8.decode(searchRes.bodyBytes));
+      final List tracks = data['data'] ?? [];
+      if (tracks.isEmpty) return [];
+      final artistId = tracks.first['artist']?['id'];
+      if (artistId == null) return [];
+
+      final relRes = await http
+          .get(Uri.parse('https://api.deezer.com/artist/$artistId/related'))
+          .timeout(const Duration(seconds: 12));
+      if (relRes.statusCode != 200) return [];
+      final rel = jsonDecode(utf8.decode(relRes.bodyBytes));
+      final List artists = rel['data'] ?? [];
+      final out = <Song>[];
+      for (final a in artists.take(3)) {
+        final name = a['name'] as String? ?? '';
+        if (name.isEmpty) continue;
+        out.addAll(await search(name, limit: 4));
+      }
+      return out;
+    } catch (e) {
+      debugPrint('Deezer similar error: $e');
+      return [];
+    }
   }
 }

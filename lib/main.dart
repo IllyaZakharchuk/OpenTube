@@ -1,12 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/material.dart';
-import 'package:audiotags/audiotags.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:file_picker/file_picker.dart';
+import 'dart:math' as math;
+
 import 'package:audio_service/audio_service.dart';
+import 'package:audiotags/audiotags.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'language_screen.dart';
 import 'theme_settings_screen.dart';
@@ -17,9 +20,11 @@ import 'player_screen.dart';
 import 'equalizer_screen.dart';
 import 'equalizer_controller.dart';
 import 'dsp_engine.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'dart:math' as math;
 import 'playback_settings_screen.dart';
+import 'listen_tracker.dart';
+import 'recommendation_engine.dart';
+import 'youtube_import_dialog.dart';
+import 'youtube_import_service.dart';
 
 AudioHandler? audioHandler;
 
@@ -94,13 +99,136 @@ class MainContainerScreen extends StatefulWidget {
   State<MainContainerScreen> createState() => _MainContainerScreenState();
 }
 
-class _MainContainerScreenState extends State<MainContainerScreen> {
+class _MainContainerScreenState extends State<MainContainerScreen>
+    with WidgetsBindingObserver {
   int _currentIndex = 0;
   List<Song> librarySongs = [];
   List<CustomPlaylist> userPlaylists = [];
   bool isLoadingLibrary = true;
   bool _isShuffle = false;
   bool _isRepeat = false;
+
+  // YouTube Music import state
+  String? _importPlaylistId;
+  String? _importUrl;
+  bool _isImporting = false;
+
+  Future<void> _openYouTubeImportDialog() async {
+    if (_isImporting) return;
+    _isImporting = true;
+    try {
+      final result = await YoutubeImportModeDialog.show(
+        context,
+        playlistTitle: 'Імпорт з YouTube',
+        importUrl: _importUrl ?? 'https://music.youtube.com/playlist?list=',
+        isOnlineDefault: true,
+      );
+      if (!mounted) return;
+      if (result == null) return;
+      _importUrl = result.url;
+      _importPlaylistId = 'Імпорт з YouTube';
+      final target = CustomPlaylist(name: 'Імпорт з YouTube', songs: []);
+      if (result.isOnline) {
+        await _saveYouTubeImportedTrackLink(target);
+      } else {
+        await _fetchAndSaveYouTubeImportedTracks(target);
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isImporting = false;
+        });
+      } else {
+        _isImporting = false;
+      }
+    }
+  }
+
+  Future<void> _showImportPlaylistDialog(CustomPlaylist playlist) async {
+    if (_isImporting) return;
+    _isImporting = true;
+
+    if (_importUrl == null && _importPlaylistId == null) {
+      _importUrl = 'https://music.youtube.com/playlist?list=PLaaaa';
+      _importPlaylistId = playlist.name;
+    }
+
+    final result = await YoutubeImportModeDialog.show(
+      context,
+      playlistTitle: playlist.name,
+      importUrl: _importUrl!,
+      isOnlineDefault: true,
+    );
+
+    if (!mounted) return;
+    _isImporting = false;
+
+    if (result == null) return;
+
+    _importUrl = result.url;
+    _importPlaylistId = playlist.name;
+
+    if (result.isOnline) {
+      // Online mode: record a playlist link reference in SQLite.
+      await _saveYouTubeImportedTrackLink(playlist);
+      return;
+    }
+
+    // Offline mode: import tracks locally and then save to SQLite library.
+    await _fetchAndSaveYouTubeImportedTracks(playlist);
+  }
+
+  Future<bool> _saveYouTubeImportedTrackLink(CustomPlaylist playlist) async {
+    final url = _importUrl;
+    if (url == null) return false;
+    try {
+      final imported = YoutubeImportService.normalizeImportPayload(
+        playlist.name,
+        <YouTubeImportedTrack>[],
+        isOnline: true,
+        playlistId: _importPlaylistId,
+      );
+      if (imported.isNotEmpty && mounted) {
+        setState(() {});
+        await _savePlaylists();
+      }
+      return true;
+    } catch (e) {
+      debugPrint('Save online link failed: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _fetchAndSaveYouTubeImportedTracks(CustomPlaylist playlist) async {
+    final pid = _importPlaylistId;
+    final url = _importUrl;
+    if (pid == null || url == null) return false;
+    try {
+      final service = YoutubeImportService();
+      final tracks = await service.fetchYouTubeTracks(pid, url);
+      final imported = YoutubeImportService.normalizeImportPayload(
+        playlist.name.isNotEmpty ? playlist.name : 'Imported YouTube Playlist',
+        tracks,
+        isOnline: true,
+        playlistId: pid,
+      );
+      if (imported.isNotEmpty && mounted) {
+        setState(() {
+          userPlaylists.addAll(imported);
+        });
+        await _savePlaylists();
+      }
+      return true;
+    } catch (e) {
+      debugPrint('Fetch YouTube tracks failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Помилка імпорту: $e')),
+        );
+      }
+      return false;
+    }
+  }
 
   final ValueNotifier<Song?> currentSongNotifier = ValueNotifier<Song?>(null);
   List<Song> currentQueue = [];
@@ -109,6 +237,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadLocalData();
 
     if (audioHandler is MyAudioHandler) {
@@ -119,6 +248,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
 
     // Слухаємо нативну подію завершення треку від ExoPlayer
     DspEngine.instance.onTrackEnded = () {
+      ListenTracker.instance.noteNaturalEnd();
       if (mounted) {
         _playNext();
       }
@@ -127,6 +257,21 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       EqualizerController.instance.loadSettings();
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
+      ListenTracker.instance.flush();
+    }
   }
 
   Future<void> _loadLocalData() async {
@@ -581,6 +726,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
                           pl.songs.add(song);
                         });
                         _savePlaylists();
+                        ListenTracker.instance.markAddedToPlaylist(song);
                       },
                     );
                   },
@@ -593,6 +739,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
   void _playSong(List<Song> songs, int index) async {
     if (index < 0 || index >= songs.length) return;
     final settings = SettingsController.instance;
+    await ListenTracker.instance.flush();
 
     // Плавне згасання поточного аудіо перед завантаженням нового треку
     if (settings.isFadeEnabled && currentSongNotifier.value != null) {
@@ -609,12 +756,25 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
     final song = songs[index];
     currentSongNotifier.value = song;
 
+    // TEMP DEBUG: imported playlist playback diagnosis.
+    // ignore: avoid_print
+    print(
+        '[PlayTap] title="${song.title}" artist="${song.artist}" isOnline=${song.isOnline} trackId=${song.trackId} path="${song.path}"');
+    if (song.isOnline &&
+        (song.trackId == null || song.trackId!.isEmpty)) {
+      // ignore: avoid_print
+      print(
+          '[PlayTap] WARNING: online track has null/empty trackId — stream URL cannot be built!');
+    }
+
     final customHandler = audioHandler as MyAudioHandler?;
 
     String finalUrl = song.path;
     if (song.isOnline) {
       if (song.trackId != null && song.trackId!.isNotEmpty) {
         finalUrl = MusicService.getStreamUrl(song.trackId!);
+        // ignore: avoid_print
+        print('[AudioSource] requesting stream URL: $finalUrl');
       } else if (!finalUrl.startsWith('http')) {
         debugPrint('--> [Player Error] Немає валідного URL або trackId!');
         return;
@@ -660,6 +820,7 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
       }
 
       EqualizerController.instance.applyAll();
+      await ListenTracker.instance.begin(song);
     } catch (e) {
       debugPrint('--> [Player Playback Error]: $e');
       if (mounted) {
@@ -778,6 +939,11 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
           onToggleRepeat: _handleToggleRepeat,
           isShuffle: _isShuffle,
           isRepeat: _isRepeat,
+          onToggleFavorite: () async {
+            final cur = currentSongNotifier.value;
+            if (cur == null) return false;
+            return ListenTracker.instance.toggleFavorite(cur);
+          },
         ),
       ),
     );
@@ -792,11 +958,13 @@ class _MainContainerScreenState extends State<MainContainerScreen> {
         currentPlayingSongNotifier: currentSongNotifier,
         isLoading: isLoadingLibrary,
         onPickFiles: _pickAudioFiles,
+        onYouTubeImport: _openYouTubeImportDialog,
         onCreatePlaylist: _showCreatePlaylistDialog,
         onPlaySong: _playSong,
         onShowSongMenu: _showLibraryTrackMenu,
         onDeletePlaylist: _deletePlaylist,
         onOpenPlaylist: (playlist) {},
+        onImportPlaylist: _showImportPlaylistDialog,
       ),
       DiscoverTab(
         onPlaySong: (songs, index) => _playSong(songs, index),
@@ -878,7 +1046,7 @@ class _DiscoverTabState extends State<DiscoverTab> {
   Future<void> _loadInitialMusic() async {
     try {
       final popular = await MusicService.getTrending();
-      final recommended = await MusicService.getRecommendations();
+      final recommended = await RecommendationEngine.instance.forYou();
       if (mounted) {
         setState(() {
           _popularTracks = popular;
@@ -1460,11 +1628,13 @@ class MediaLibraryTab extends StatefulWidget {
   final ValueNotifier<Song?> currentPlayingSongNotifier;
   final bool isLoading;
   final VoidCallback onPickFiles;
+  final VoidCallback? onYouTubeImport;
   final VoidCallback onCreatePlaylist;
   final Function(List<Song>, int) onPlaySong;
   final Function(Song, int) onShowSongMenu;
   final ValueChanged<int> onDeletePlaylist;
   final Function(CustomPlaylist) onOpenPlaylist;
+  final Function(CustomPlaylist)? onImportPlaylist;
 
   const MediaLibraryTab({
     super.key,
@@ -1473,11 +1643,13 @@ class MediaLibraryTab extends StatefulWidget {
     required this.currentPlayingSongNotifier,
     required this.isLoading,
     required this.onPickFiles,
+    this.onYouTubeImport,
     required this.onCreatePlaylist,
     required this.onPlaySong,
     required this.onShowSongMenu,
     required this.onDeletePlaylist,
     required this.onOpenPlaylist,
+    this.onImportPlaylist,
   });
 
   @override
@@ -1507,11 +1679,13 @@ class _MediaLibraryTabState extends State<MediaLibraryTab> {
               currentPlayingSongNotifier: widget.currentPlayingSongNotifier,
               isLoading: widget.isLoading,
               onPickFiles: widget.onPickFiles,
+              onYouTubeImport: widget.onYouTubeImport,
               onCreatePlaylist: widget.onCreatePlaylist,
               onPlaySong: widget.onPlaySong,
               onShowSongMenu: widget.onShowSongMenu,
               onDeletePlaylist: widget.onDeletePlaylist,
               onOpenPlaylist: widget.onOpenPlaylist,
+              onImportPlaylist: widget.onImportPlaylist,
             ),
           );
         },
@@ -1526,11 +1700,13 @@ class _MediaHubHomeView extends StatelessWidget {
   final ValueNotifier<Song?> currentPlayingSongNotifier;
   final bool isLoading;
   final VoidCallback onPickFiles;
+  final VoidCallback? onYouTubeImport;
   final VoidCallback onCreatePlaylist;
   final Function(List<Song>, int) onPlaySong;
   final Function(Song, int) onShowSongMenu;
   final ValueChanged<int> onDeletePlaylist;
   final Function(CustomPlaylist) onOpenPlaylist;
+  final Function(CustomPlaylist)? onImportPlaylist;
 
   const _MediaHubHomeView({
     required this.librarySongs,
@@ -1538,11 +1714,13 @@ class _MediaHubHomeView extends StatelessWidget {
     required this.currentPlayingSongNotifier,
     required this.isLoading,
     required this.onPickFiles,
+    this.onYouTubeImport,
     required this.onCreatePlaylist,
     required this.onPlaySong,
     required this.onShowSongMenu,
     required this.onDeletePlaylist,
     required this.onOpenPlaylist,
+    this.onImportPlaylist,
   });
 
   Widget _buildHubCard({
@@ -1662,6 +1840,23 @@ class _MediaHubHomeView extends StatelessWidget {
             backgroundColor: settings.backgroundColor,
             elevation: 0,
             actions: [
+              if (onYouTubeImport != null)
+                IconButton(
+                  icon: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: settings.accentColor.withOpacity(0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      Icons.link_rounded,
+                      color: settings.accentColor,
+                      size: 22,
+                    ),
+                  ),
+                  tooltip: 'Імпорт з YouTube',
+                  onPressed: onYouTubeImport,
+                ),
               IconButton(
                 icon: Container(
                   padding: const EdgeInsets.all(6),

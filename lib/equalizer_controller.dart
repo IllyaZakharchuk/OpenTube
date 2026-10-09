@@ -99,6 +99,8 @@ class EqualizerController extends ChangeNotifier {
   double centerCut = 0.6;      // 0.0 .. 1.0  віддаленість боків
   double echoAmount = 0.3;     // 0.0 .. 1.0  ехо
   double limiterCeilingDb = -1.5; // -6.0 .. 0.0 dB  стеля лімітера (загальна, не в пресетах)
+  double limiterReleaseMs = 80;   // 20 .. 300 мс
+  double limiterLookaheadMs = 4;  // 1 .. 10 мс
 
   List<EqBand> bands = DspConfig.flat10().bands;
   String currentPresetName = 'KZ ZS10 Pro X Stage';
@@ -146,6 +148,8 @@ class EqualizerController extends ChangeNotifier {
     centerCut = prefs.getDouble('dsp_center') ?? 0.6;
     echoAmount = prefs.getDouble('dsp_echo') ?? 0.3;
     limiterCeilingDb = prefs.getDouble('dsp_limiter') ?? -1.5;
+    limiterReleaseMs = prefs.getDouble('dsp_lim_release') ?? 80;
+    limiterLookaheadMs = prefs.getDouble('dsp_lim_look') ?? 4;
     currentPresetName = prefs.getString('dsp_preset') ?? 'Flat';
 
     final savedCustom = prefs.getString('dsp_custom_presets');
@@ -187,6 +191,8 @@ class EqualizerController extends ChangeNotifier {
     await prefs.setDouble('dsp_center', centerCut);
     await prefs.setDouble('dsp_echo', echoAmount);
     await prefs.setDouble('dsp_limiter', limiterCeilingDb);
+    await prefs.setDouble('dsp_lim_release', limiterReleaseMs);
+    await prefs.setDouble('dsp_lim_look', limiterLookaheadMs);
     await prefs.setString('dsp_preset', currentPresetName);
     await prefs.setString('dsp_bands', jsonEncode(bands.map((b) => b.gainDb).toList()));
     await prefs.setString(
@@ -270,6 +276,20 @@ class EqualizerController extends ChangeNotifier {
 
   void setEchoAmount(double val) {
     echoAmount = val;
+    notifyListeners();
+    applyAll();
+    saveSettings();
+  }
+
+  void setLimiterRelease(double val) {
+    limiterReleaseMs = val;
+    notifyListeners();
+    applyAll();
+    saveSettings();
+  }
+
+  void setLimiterLookahead(double val) {
+    limiterLookaheadMs = val;
     notifyListeners();
     applyAll();
     saveSettings();
@@ -436,6 +456,8 @@ class EqualizerController extends ChangeNotifier {
         centerCut: centerCut,
         echoAmount: echoAmount,
         limiterCeilingDb: limiterCeilingDb,
+        limiterReleaseMs: limiterReleaseMs,
+        limiterLookaheadMs: limiterLookaheadMs,
       );
       await _engine.apply(config);
     } catch (e) {
