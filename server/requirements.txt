@@ -1,0 +1,28 @@
+# OpenTube backend dependencies.
+#
+# Only the modules under server/ are needed. Everything here is I/O-bound
+# (network), which is what the async fan-out in recommend.py parallelizes.
+
+# --- recommend.py (recommendations / radio / playlist import) ---------------
+ytmusicapi>=1.3.0      # YouTube Music search, watch-playlist radio, playlists
+requests>=2.31.0       # Last.fm + Deezer similar-artist lookups
+
+# --- main.py (search / stream / yt-dlp based import) ------------------------
+yt-dlp>=2024.1.1       # flat metadata extraction for search/radio/import
+httpx>=0.27.0          # proxied audio streaming (async)
+fastapi>=0.110.0       # ASGI app used by main.py
+uvicorn>=0.27.0        # ASGI server:  uvicorn main:app --host 0.0.0.0 --port 8055
+pydantic>=2.6.0        # request body models
+
+# --- optional: recommend.py also supports a Flask deployment ----------------
+# flask>=3.0.0
+
+# --- SOCKS5 proxy support ----------------------------------------------------
+# Required whenever PROXY_URL is a socks5:// URL (as on the Oracle box, where
+# YouTube serves datacenter IPs a consent page). Without these, upstream calls
+# fail with "InvalidSchema: Missing dependencies for SOCKS support" (requests)
+# or "Using SOCKS proxy, but the 'socksio' package is not installed" (httpx).
+# yt-dlp pulls them in transitively, but declare them explicitly so a deploy
+# that skips yt-dlp (or reinstalls httpx) does not silently lose the proxy.
+PySocks>=1.7.1
+socksio>=1.0.0
