@@ -180,21 +180,42 @@ class _MainContainerScreenState extends State<MainContainerScreen>
 
   Future<bool> _saveYouTubeImportedTrackLink(CustomPlaylist playlist) async {
     final url = _importUrl;
+    final pid = _importPlaylistId;
     if (url == null) return false;
     try {
+      // DEBUG: online import branch diagnosis.
+      // ignore: avoid_print
+      print(
+          '[ImportMode] ONLINE selected — fetching track list for streaming (playlist="${playlist.name}")');
+      final service = YoutubeImportService();
+      // Online mode still needs the resolved track list (videoIds) — the
+      // playlist is stored as stream references, no local audio files.
+      final tracks = await service.fetchYouTubeTracks(pid ?? playlist.name, url);
       final imported = YoutubeImportService.normalizeImportPayload(
         playlist.name,
-        <YouTubeImportedTrack>[],
+        tracks,
         isOnline: true,
-        playlistId: _importPlaylistId,
+        playlistId: pid,
       );
       if (imported.isNotEmpty && mounted) {
-        setState(() {});
+        setState(() {
+          final idx = userPlaylists.indexWhere((p) => p.name == playlist.name);
+          if (idx >= 0) {
+            userPlaylists[idx].songs.addAll(imported.first.songs);
+          } else {
+            userPlaylists.addAll(imported);
+          }
+        });
         await _savePlaylists();
       }
       return true;
     } catch (e) {
       debugPrint('Save online link failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Помилка онлайн-імпорту: $e')),
+        );
+      }
       return false;
     }
   }
@@ -204,19 +225,51 @@ class _MainContainerScreenState extends State<MainContainerScreen>
     final url = _importUrl;
     if (pid == null || url == null) return false;
     try {
+      // DEBUG: offline import branch diagnosis.
+      // ignore: avoid_print
+      print(
+          '[ImportMode] OFFLINE selected — fetching tracks then downloading to local library (playlist="${playlist.name}")');
       final service = YoutubeImportService();
       final tracks = await service.fetchYouTubeTracks(pid, url);
-      final imported = YoutubeImportService.normalizeImportPayload(
-        playlist.name.isNotEmpty ? playlist.name : 'Imported YouTube Playlist',
-        tracks,
-        isOnline: true,
-        playlistId: pid,
+      // Offline = playable local files: fetch resolves videoIds, then each
+      // track is downloaded via /api/audio/stream into app documents.
+      final downloaded = await _downloadImportedTracksToLibrary(tracks);
+      if (downloaded.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Не вдалося завантажити жодного треку офлайн')),
+          );
+        }
+        return false;
+      }
+      final offlinePlaylist = CustomPlaylist(
+        name: playlist.name.isNotEmpty
+            ? playlist.name
+            : 'Imported YouTube Playlist',
+        songs: downloaded,
       );
-      if (imported.isNotEmpty && mounted) {
+      if (mounted) {
         setState(() {
-          userPlaylists.addAll(imported);
+          final idx = userPlaylists.indexWhere((p) => p.name == playlist.name);
+          if (idx >= 0) {
+            userPlaylists[idx].songs.addAll(downloaded);
+          } else {
+            userPlaylists.add(offlinePlaylist);
+          }
+          // Offline tracks are also real local files → show them in library.
+          for (final s in downloaded) {
+            if (!librarySongs.any((e) =>
+                e.path == s.path ||
+                (e.trackId != null &&
+                    s.trackId != null &&
+                    e.trackId == s.trackId))) {
+              librarySongs.add(s);
+            }
+          }
         });
         await _savePlaylists();
+        await _saveLibrary();
       }
       return true;
     } catch (e) {
@@ -228,6 +281,69 @@ class _MainContainerScreenState extends State<MainContainerScreen>
       }
       return false;
     }
+  }
+
+  /// Downloads each imported [YouTubeImportedTrack] via
+  /// `/api/audio/stream?id=<videoId>` into app documents and returns
+  /// ready-to-play **offline** [Song]s (`isOnline: false`, real file path).
+  Future<List<Song>> _downloadImportedTracksToLibrary(
+    List<YouTubeImportedTrack> tracks,
+  ) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final out = <Song>[];
+    var index = 0;
+    for (final track in tracks) {
+      index++;
+      final videoId = track.videoId?.trim() ?? '';
+      if (videoId.isEmpty) {
+        // ignore: avoid_print
+        print(
+            '[ImportDownload] skip "${track.title}": null/empty videoId — stream URL cannot be built');
+        continue;
+      }
+      final streamUrl = MusicService.getStreamUrl(videoId);
+      // ignore: avoid_print
+      print('[ImportDownload] ($index/${tracks.length}) stream: $streamUrl');
+      try {
+        final res = await http
+            .get(Uri.parse(streamUrl))
+            .timeout(const Duration(seconds: 60));
+        if (res.statusCode != 200 || res.bodyBytes.isEmpty) {
+          // ignore: avoid_print
+          print(
+              '[ImportDownload] HTTP ${res.statusCode} for videoId=$videoId — skipped');
+          continue;
+        }
+        final safeTitle = (track.title.isNotEmpty ? track.title : videoId)
+            .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+        final filePath = '${dir.path}/${safeTitle}_$videoId.m4a';
+        await File(filePath).writeAsBytes(res.bodyBytes);
+        // ignore: avoid_print
+        print('[ImportDownload] saved offline: $filePath');
+        out.add(
+          Song(
+            title: track.title.isNotEmpty ? track.title : 'Unknown',
+            artist: track.artist.isNotEmpty ? track.artist : 'Unknown',
+            path: filePath,
+            artworkUrl: track.thumbnailUrl,
+            isOnline: false,
+            trackId: videoId,
+          ),
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Завантажено $index/${tracks.length}: ${track.title}'),
+              duration: const Duration(milliseconds: 800),
+            ),
+          );
+        }
+      } catch (e) {
+        // ignore: avoid_print
+        print('[ImportDownload] failed videoId=$videoId: $e');
+      }
+    }
+    return out;
   }
 
   final ValueNotifier<Song?> currentSongNotifier = ValueNotifier<Song?>(null);
@@ -1030,20 +1146,74 @@ class DiscoverTab extends StatefulWidget {
 }
 
 class _DiscoverTabState extends State<DiscoverTab> {
+  static const int _pageSize = 25;
+
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
   List<Song> _popularTracks = [];
   List<Song> _recommendedTracks = [];
   List<Song> _searchResults = [];
   bool _isLoadingContent = true;
   bool _isSearching = false;
+  bool _isLoadingMoreSearch = false;
+  bool _searchHasMore = true;
+  String _lastQuery = '';
 
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScrollNearBottom);
     _loadInitialMusic();
   }
 
+  @override
+  void dispose() {
+    _scrollController
+      ..removeListener(_onScrollNearBottom)
+      ..dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  /// Infinite scroll: when the outer list is ~400px from the bottom,
+  /// append the next search batch (limit/offset paging).
+  void _onScrollNearBottom() {
+    if (!_scrollController.hasClients || _isLoadingMoreSearch) return;
+    if (_searchResults.isEmpty || !_searchHasMore) return;
+    final pos = _scrollController.position;
+    if (pos.pixels >= pos.maxScrollExtent - 400) {
+      _loadMoreSearch();
+    }
+  }
+
+  Future<void> _loadMoreSearch() async {
+    if (_isLoadingMoreSearch || !_searchHasMore || _lastQuery.isEmpty) return;
+    setState(() => _isLoadingMoreSearch = true);
+    try {
+      final page = await MusicService.search(
+        _lastQuery,
+        limit: _pageSize,
+        offset: _searchResults.length,
+      );
+      if (!mounted) return;
+      setState(() {
+        final known = _searchResults
+            .map((s) => s.trackId ?? '${s.artist}|${s.title}')
+            .toSet();
+        for (final song in page) {
+          final key = song.trackId ?? '${song.artist}|${song.title}';
+          if (known.add(key)) _searchResults.add(song);
+        }
+        if (page.length < _pageSize) _searchHasMore = false;
+        _isLoadingMoreSearch = false;
+      });
+    } catch (e) {
+      if (mounted) setState(() => _isLoadingMoreSearch = false);
+    }
+  }
+
   Future<void> _loadInitialMusic() async {
+    if (mounted) setState(() => _isLoadingContent = true);
     try {
       final popular = await MusicService.getTrending();
       final recommended = await RecommendationEngine.instance.forYou();
@@ -1059,6 +1229,19 @@ class _DiscoverTabState extends State<DiscoverTab> {
     }
   }
 
+  /// Pull-to-refresh handler for the Internet feed: re-fetches trending +
+  /// personalized tracks from the backend. If a search is active, refreshes
+  /// the first search page instead (keeping infinite scroll offsets valid).
+  Future<void> _refreshFeed() async {
+    final activeQuery = _lastQuery.trim();
+    if (_searchResults.isNotEmpty || activeQuery.isNotEmpty) {
+      await _search(activeQuery);
+      await _loadInitialMusic();
+      return;
+    }
+    await _loadInitialMusic();
+  }
+
   Future<void> _search(String query) async {
     final clean = query.trim();
     if (clean.isEmpty) return;
@@ -1066,12 +1249,15 @@ class _DiscoverTabState extends State<DiscoverTab> {
     setState(() {
       _isSearching = true;
       _searchResults = [];
+      _searchHasMore = true;
+      _lastQuery = clean;
     });
 
-    final res = await MusicService.search(clean, limit: 25);
+    final res = await MusicService.search(clean, limit: _pageSize);
     if (mounted) {
       setState(() {
         _searchResults = res;
+        _searchHasMore = res.length >= _pageSize;
         _isSearching = false;
       });
     }
@@ -1086,7 +1272,14 @@ class _DiscoverTabState extends State<DiscoverTab> {
         backgroundColor: Colors.transparent,
         elevation: 0,
       ),
-      body: ListView(
+      body: RefreshIndicator(
+        color: SettingsController.instance.accentColor,
+        onRefresh: _refreshFeed,
+        child: ListView(
+        controller: _scrollController,
+        // AlwaysScrollable keeps pull-to-refresh working even when the
+        // feed is short and would otherwise not overscroll.
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
         children: [
           Container(
@@ -1135,8 +1328,18 @@ class _DiscoverTabState extends State<DiscoverTab> {
             ListView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: _searchResults.length,
+              itemCount:
+                  _searchResults.length + (_isLoadingMoreSearch ? 1 : 0),
               itemBuilder: (context, index) {
+                if (index >= _searchResults.length) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16.0),
+                    child: Center(
+                      child: CircularProgressIndicator(
+                          color: SettingsController.instance.accentColor),
+                    ),
+                  );
+                }
                 final song = _searchResults[index];
                 return _buildTrackTile(song, _searchResults, index);
               },
@@ -1225,6 +1428,7 @@ class _DiscoverTabState extends State<DiscoverTab> {
                   ),
           ],
         ],
+        ),
       ),
     );
   }
@@ -1999,13 +2203,37 @@ class AllSongsScreen extends StatefulWidget {
 }
 
 class _AllSongsScreenState extends State<AllSongsScreen> {
+  static const int _pageSize = 30;
+
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
   String _searchQuery = '';
+  int _visibleCount = _pageSize;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_onScrollNearBottom);
+  }
 
   @override
   void dispose() {
+    _scrollController
+      ..removeListener(_onScrollNearBottom)
+      ..dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  /// Local infinite scroll: reveals the next batch of already-loaded songs.
+  /// (Local library lives on device — no network paging needed — but
+  /// rendering 30 at a time keeps huge libraries smooth.)
+  void _onScrollNearBottom() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    if (pos.pixels >= pos.maxScrollExtent - 400) {
+      setState(() => _visibleCount += _pageSize);
+    }
   }
 
   @override
@@ -2032,6 +2260,7 @@ class _AllSongsScreenState extends State<AllSongsScreen> {
       backgroundColor: settings.backgroundColor,
       body: CustomScrollView(
         key: const PageStorageKey('all_songs_scroll'),
+        controller: _scrollController,
         slivers: [
           SliverToBoxAdapter(
             child: Stack(
@@ -2183,7 +2412,10 @@ class _AllSongsScreenState extends State<AllSongsScreen> {
                 child: TextField(
                   controller: _searchController,
                   style: TextStyle(color: settings.textColor, fontSize: 14),
-                  onChanged: (val) => setState(() => _searchQuery = val.trim()),
+                  onChanged: (val) => setState(() {
+                    _searchQuery = val.trim();
+                    _visibleCount = _pageSize;
+                  }),
                   decoration: InputDecoration(
                     hintText: AppLocale.tr('search_library_hint'),
                     hintStyle: TextStyle(color: settings.subTextColor, fontSize: 14),
@@ -2220,7 +2452,17 @@ class _AllSongsScreenState extends State<AllSongsScreen> {
                   sliver: SliverList(
                     delegate: SliverChildBuilderDelegate(
                       (context, index) {
-                        final song = filteredSongs[index];
+                        final visible =
+                            filteredSongs.take(_visibleCount).toList();
+                        if (index >= visible.length) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 16.0),
+                            child: Center(
+                              child: CircularProgressIndicator(color: accent),
+                            ),
+                          );
+                        }
+                        final song = visible[index];
 
                         return Container(
                           margin: const EdgeInsets.only(bottom: 8),
@@ -2281,7 +2523,9 @@ class _AllSongsScreenState extends State<AllSongsScreen> {
                           ),
                         );
                       },
-                      childCount: filteredSongs.length,
+                      childCount: filteredSongs.length > _visibleCount
+                          ? _visibleCount + 1
+                          : filteredSongs.length,
                     ),
                   ),
                 ),

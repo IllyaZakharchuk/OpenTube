@@ -365,11 +365,13 @@ class MusicService {
   /// (the Oracle /api/recommend still uses LASTFM_API_KEY on the server).
   static const String lastFmApiKey = String.fromEnvironment('LASTFM_API_KEY');
 
-  static Future<List<Song>> search(String query, {int limit = 20}) async {
+  static Future<List<Song>> search(String query,
+      {int limit = 20, int offset = 0}) async {
     try {
       final uri = Uri.parse('$baseUrl/api/search').replace(queryParameters: {
         'q': query,
         'limit': limit.toString(),
+        'offset': offset.toString(),
       });
       final res = await http.get(uri);
       if (res.statusCode == 200) {
@@ -421,11 +423,13 @@ class MusicService {
     }).toList();
   }
 
-  static Future<List<Song>> getRadio(String videoId, {int limit = 15}) async {
+  static Future<List<Song>> getRadio(String videoId,
+      {int limit = 15, int offset = 0}) async {
     try {
       final uri = Uri.parse('$baseUrl/api/radio').replace(queryParameters: {
         'id': videoId,
         'limit': limit.toString(),
+        'offset': offset.toString(),
       });
       final res = await http.get(uri).timeout(const Duration(seconds: 20));
       if (res.statusCode == 200) {

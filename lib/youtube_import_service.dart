@@ -128,12 +128,14 @@ class YoutubeImportService {
     required String playlistId,
     required String url,
     required int limit,
+    int offset = 0,
   }) async {
     final uri = Uri.parse('$base/api/import/youtube/playlist').replace(
       queryParameters: {
         'playlist_id': playlistId,
         'url': url,
         'limit': limit.toString(),
+        'offset': offset.toString(),
       },
     );
     http.Response res;
@@ -239,6 +241,7 @@ class YoutubeImportService {
     String playlistId,
     String url, {
     int limit = 200,
+    int offset = 0,
     String? customBaseUrl,
   }) async {
     final base = customBaseUrl ?? defaultBaseUrl;
@@ -251,6 +254,7 @@ class YoutubeImportService {
       playlistId: listId,
       url: url,
       limit: limit,
+      offset: offset,
     );
     if (direct != null) return direct;
 
@@ -370,16 +374,20 @@ class YoutubeImportService {
       // playlistId here: that would stream the wrong id.
       final rawId = track.videoId?.trim() ?? '';
       final resolvedId = rawId.isEmpty ? null : rawId;
+      // DEBUG: playlist import mode + track mapping diagnosis.
       // ignore: avoid_print
       print(
-          '[ImportMapper] title="$title" videoId=$resolvedId playlistId=${track.playlistId}');
+          '[ImportMapper] isOnline=$isOnline title="$title" videoId=$resolvedId playlistId=${track.playlistId}');
 
       songs.add(
         Song(
           title: title,
+          // Online tracks stream via /api/audio/stream — no local file.
+          // Offline tracks must be downloaded first (see _fetchAndSave...);
+          // an empty path would resolve to file:// and never play.
           path: '',
           artist: artist,
-          isOnline: true,
+          isOnline: isOnline,
           artworkUrl: track.thumbnailUrl,
           trackId: resolvedId,
         ),

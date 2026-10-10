@@ -3,6 +3,66 @@ import 'package:flutter/foundation.dart';
 import 'listening_store.dart';
 import 'models.dart';
 
+/// Generic batched loader for infinite song lists.
+///
+/// Keeps already loaded [items], requests the next `pageSize` chunk via
+/// [fetchPage] (which receives the current item count as `offset`) and
+/// appends it. `hasMore=false` stops further requests; `isLoading` guards
+/// against parallel fetches triggered by fast scrolling.
+class PagedSongLoader extends ChangeNotifier {
+  PagedSongLoader({
+    required Future<List<Song>> Function(int offset, int limit) fetchPage,
+    this.pageSize = 25,
+  }) : _fetchPage = fetchPage;
+
+  final Future<List<Song>> Function(int offset, int limit) _fetchPage;
+  final int pageSize;
+
+  final List<Song> items = [];
+  bool hasMore = true;
+  bool isLoading = false;
+  Object? lastError;
+
+  Future<void> loadMore() async {
+    if (isLoading || !hasMore) return;
+    isLoading = true;
+    lastError = null;
+    notifyListeners();
+    try {
+      final page = await _fetchPage(items.length, pageSize);
+      final known = items
+          .map((s) => s.trackId ?? '${s.artist}|${s.title}')
+          .toSet();
+      var added = 0;
+      for (final song in page) {
+        final key = song.trackId ?? '${song.artist}|${song.title}';
+        if (known.add(key)) {
+          items.add(song);
+          added++;
+        }
+      }
+      // A short (or empty) page means the backend has no more items.
+      if (page.length < pageSize || added == 0 && page.isNotEmpty) {
+        if (page.length < pageSize) hasMore = false;
+      }
+      if (page.isEmpty) hasMore = false;
+    } catch (e) {
+      lastError = e;
+    } finally {
+      isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  void reset() {
+    items.clear();
+    hasMore = true;
+    isLoading = false;
+    lastError = null;
+    notifyListeners();
+  }
+}
+
 class RecommendationEngine {
   RecommendationEngine._();
   static final RecommendationEngine instance = RecommendationEngine._();
@@ -64,6 +124,27 @@ class RecommendationEngine {
         addSongs(radio, seed, discovery: false);
       } catch (e) {
         debugPrint('Radio for ${seed.trackId}: $e');
+      }
+      // Direct per-seed metadata search mirror of the server fix: keeps
+      // underground/unofficial seeds (Lil Peep etc.) in the mix even when
+      // radio/Last.fm/Deezer return nothing for them.
+      try {
+        final artist = seed.artist.trim();
+        final title = seed.title.trim();
+        final queries = <String>[
+          if (artist.isNotEmpty && title.isNotEmpty) '$artist $title',
+          if (artist.isNotEmpty) artist,
+          if (title.isNotEmpty &&
+              !artist.toLowerCase().contains(title.toLowerCase()))
+            title,
+        ];
+        for (final q in queries) {
+          final found = await MusicService.search(q, limit: 4);
+          addSongs(found, seed, discovery: false);
+          if (votes.length > limit * 12) break;
+        }
+      } catch (e) {
+        debugPrint('Direct seed search ${seed.artist}: $e');
       }
     }
 
