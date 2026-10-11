@@ -113,9 +113,25 @@ class _MainContainerScreenState extends State<MainContainerScreen>
   String? _importUrl;
   bool _isImporting = false;
 
+  // Progress text shown inside the import overlay (fetching / saving).
+  String _importStatus = '';
+
+  void _setImporting(bool value, [String status = '']) {
+    _importStatus = status;
+    if (mounted) {
+      setState(() {
+        _isImporting = value;
+        if (!value) _importStatus = '';
+      });
+    } else {
+      _isImporting = value;
+      if (!value) _importStatus = '';
+    }
+  }
+
   Future<void> _openYouTubeImportDialog() async {
     if (_isImporting) return;
-    _isImporting = true;
+    _setImporting(true);
     try {
       final result = await YoutubeImportModeDialog.show(
         context,
@@ -127,26 +143,30 @@ class _MainContainerScreenState extends State<MainContainerScreen>
       if (result == null) return;
       _importUrl = result.url;
       _importPlaylistId = 'Імпорт з YouTube';
-      final target = CustomPlaylist(name: 'Імпорт з YouTube', songs: []);
+      final initialTarget = CustomPlaylist(name: 'Імпорт з YouTube', songs: []);
+      final resolvedTarget = await _resolveImportedPlaylistTarget(
+        source: initialTarget,
+        url: result.url,
+        playlistId: 'Імпорт з YouTube',
+      );
+      if (resolvedTarget == null) {
+        _setImporting(false);
+        return;
+      }
+      final target = resolvedTarget;
       if (result.isOnline) {
         await _saveYouTubeImportedTrackLink(target);
       } else {
         await _fetchAndSaveYouTubeImportedTracks(target);
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          _isImporting = false;
-        });
-      } else {
-        _isImporting = false;
-      }
+      _setImporting(false);
     }
   }
 
   Future<void> _showImportPlaylistDialog(CustomPlaylist playlist) async {
     if (_isImporting) return;
-    _isImporting = true;
+    _setImporting(true);
 
     if (_importUrl == null && _importPlaylistId == null) {
       _importUrl = 'https://music.youtube.com/playlist?list=PLaaaa';
@@ -160,44 +180,66 @@ class _MainContainerScreenState extends State<MainContainerScreen>
       isOnlineDefault: true,
     );
 
-    if (!mounted) return;
-    _isImporting = false;
+    if (!mounted) {
+      _setImporting(false);
+      return;
+    }
 
-    if (result == null) return;
+    if (result == null) {
+      _setImporting(false);
+      return;
+    }
 
     _importUrl = result.url;
     _importPlaylistId = playlist.name;
 
-    if (result.isOnline) {
-      // Online mode: record a playlist link reference in SQLite.
-      await _saveYouTubeImportedTrackLink(playlist);
-      return;
-    }
+    try {
+      if (result.isOnline) {
+        // Online mode: record a playlist link reference in SQLite.
+        await _saveYouTubeImportedTrackLink(playlist);
+        return;
+      }
 
-    // Offline mode: import tracks locally and then save to SQLite library.
-    await _fetchAndSaveYouTubeImportedTracks(playlist);
+      // Offline mode: import tracks locally and then save to SQLite library.
+      await _fetchAndSaveYouTubeImportedTracks(playlist);
+    } finally {
+      _setImporting(false);
+    }
   }
 
   Future<bool> _saveYouTubeImportedTrackLink(CustomPlaylist playlist) async {
     final url = _importUrl;
     final pid = _importPlaylistId;
     if (url == null) return false;
+    _setImporting(true, 'Отримання треків з YouTube…');
     try {
-      // DEBUG: online import branch diagnosis.
-      // ignore: avoid_print
-      print(
-          '[ImportMode] ONLINE selected — fetching track list for streaming (playlist="${playlist.name}")');
-      final service = YoutubeImportService();
-      // Online mode still needs the resolved track list (videoIds) — the
-      // playlist is stored as stream references, no local audio files.
-      final tracks = await service.fetchYouTubeTracks(pid ?? playlist.name, url);
+      // Always resolve the true playlist metadata from the backend before
+      // committing the local playlist object (title, tracks, playlist id).
+      final target = await _resolveImportedPlaylistTarget(
+        source: playlist,
+        url: url,
+        playlistId: pid,
+      );
+      if (target == null) return false;
+
+      final tracks = await YoutubeImportService().fetchYouTubeTracks(
+        pid ?? playlist.name,
+        url,
+      );
       final imported = YoutubeImportService.normalizeImportPayload(
-        playlist.name,
+        target.name,
         tracks,
         isOnline: true,
         playlistId: pid,
       );
+      if (imported.isEmpty && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Неможливо отримати треки з YouTube')),
+        );
+        return false;
+      }
       if (imported.isNotEmpty && mounted) {
+        _setImporting(true, 'Збереження плейлиста…');
         setState(() {
           final idx = userPlaylists.indexWhere((p) => p.name == playlist.name);
           if (idx >= 0) {
@@ -205,8 +247,26 @@ class _MainContainerScreenState extends State<MainContainerScreen>
           } else {
             userPlaylists.addAll(imported);
           }
+          // Online tracks must also appear in "All music": that screen renders
+          // librarySongs only, so mirror the imported songs there (deduped by
+          // trackId, never by the shared empty path).
+          for (final s in imported.first.songs) {
+            final duplicate = librarySongs.any((e) {
+              if (e.trackId != null &&
+                  s.trackId != null &&
+                  e.trackId!.isNotEmpty &&
+                  s.trackId!.isNotEmpty) {
+                return e.trackId == s.trackId;
+              }
+              return e.title == s.title && e.artist == s.artist;
+            });
+            if (!duplicate) {
+              librarySongs.add(s);
+            }
+          }
         });
         await _savePlaylists();
+        await _saveLibrary();
       }
       return true;
     } catch (e) {
@@ -220,10 +280,39 @@ class _MainContainerScreenState extends State<MainContainerScreen>
     }
   }
 
+  Future<CustomPlaylist?> _resolveImportedPlaylistTarget({
+    required CustomPlaylist source,
+    required String url,
+    required String? playlistId,
+  }) async {
+    String resolvedTitle = source.name;
+    try {
+      final service = YoutubeImportService();
+      final fetched = await service.fetchYouTubeTracks(
+        playlistId ?? source.name,
+        url,
+      );
+      final first = fetched.firstOrNull;
+      if (first != null && first.playlistId != null && first.playlistId!.isNotEmpty) {
+        // Backend returns the playlist title as playlist_id; use it as the
+        // display name for the saved playlist object.
+        resolvedTitle = first.playlistId!;
+      }
+    } catch (_) {
+      // Keep the original dialog title if the backend endpoint is unavailable.
+    }
+
+    return CustomPlaylist(
+      name: resolvedTitle.isNotEmpty ? resolvedTitle : 'Імпорт з YouTube',
+      songs: [],
+    );
+  }
+
   Future<bool> _fetchAndSaveYouTubeImportedTracks(CustomPlaylist playlist) async {
     final pid = _importPlaylistId;
     final url = _importUrl;
     if (pid == null || url == null) return false;
+    _setImporting(true, 'Отримання треків з YouTube…');
     try {
       // DEBUG: offline import branch diagnosis.
       // ignore: avoid_print
@@ -250,6 +339,7 @@ class _MainContainerScreenState extends State<MainContainerScreen>
         songs: downloaded,
       );
       if (mounted) {
+        _setImporting(true, 'Збереження треків…');
         setState(() {
           final idx = userPlaylists.indexWhere((p) => p.name == playlist.name);
           if (idx >= 0) {
@@ -1090,45 +1180,98 @@ class _MainContainerScreenState extends State<MainContainerScreen>
       const SettingsTab(),
     ];
 
-    return Scaffold(
-      body: Column(
-        children: [
-          Expanded(
-            child: IndexedStack(
-              index: _currentIndex,
-              children: pages,
+    final settings = SettingsController.instance;
+
+    return Stack(
+      children: [
+        Scaffold(
+          body: Column(
+            children: [
+              Expanded(
+                child: IndexedStack(
+                  index: _currentIndex,
+                  children: pages,
+                ),
+              ),
+              MiniPlayer(
+                currentSongNotifier: currentSongNotifier,
+                onTap: _openPlayerScreen,
+                onPrev: _playPrev,
+                onNext: _playNext,
+              ),
+            ],
+          ),
+          bottomNavigationBar: NavigationBar(
+            selectedIndex: _currentIndex,
+            onDestinationSelected: (index) => setState(() => _currentIndex = index),
+            destinations: [
+              NavigationDestination(
+                icon: const Icon(Icons.library_music_rounded),
+                label: AppLocale.tr('media'),
+              ),
+              NavigationDestination(
+                icon: const Icon(Icons.language_rounded),
+                label: AppLocale.tr('discover'),
+              ),
+              const NavigationDestination(
+                icon: Icon(Icons.tune_rounded),
+                label: 'EQ',
+              ),
+              NavigationDestination(
+                icon: const Icon(Icons.settings_rounded),
+                label: AppLocale.tr('settings'),
+              ),
+            ],
+          ),
+        ),
+        // Import progress overlay: blocks interaction while tracks are
+        // fetched over the network and persisted via _saveLibrary().
+        if (_isImporting)
+          Positioned.fill(
+            child: AbsorbPointer(
+              absorbing: true,
+              child: Container(
+                color: Colors.black.withOpacity(0.55),
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 28,
+                      vertical: 24,
+                    ),
+                    decoration: BoxDecoration(
+                      color: settings.surfaceColor,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: settings.accentColor.withOpacity(0.25),
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(
+                          color: settings.accentColor,
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          _importStatus.isNotEmpty
+                              ? _importStatus
+                              : 'Імпорт плейлиста…',
+                          style: TextStyle(
+                            color: settings.textColor,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 15,
+                            decoration: TextDecoration.none,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
-          MiniPlayer(
-            currentSongNotifier: currentSongNotifier,
-            onTap: _openPlayerScreen,
-            onPrev: _playPrev,
-            onNext: _playNext,
-          ),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentIndex,
-        onDestinationSelected: (index) => setState(() => _currentIndex = index),
-        destinations: [
-          NavigationDestination(
-            icon: const Icon(Icons.library_music_rounded),
-            label: AppLocale.tr('media'),
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.language_rounded),
-            label: AppLocale.tr('discover'),
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.tune_rounded),
-            label: 'EQ',
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.settings_rounded),
-            label: AppLocale.tr('settings'),
-          ),
-        ],
-      ),
+      ],
     );
   }
 }

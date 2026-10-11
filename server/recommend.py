@@ -1122,10 +1122,14 @@ def _as_int(value: Any, default: int) -> int:
 
 # Paths this module owns. Used to detect/override collisions when wiring into
 # an app that already defines them (main.py does).
+# NOTE: /api/import/youtube/playlist is intentionally NOT owned here.
+# The canonical implementation lives in main.py (yt-dlp + SOCKS5 proxy, the
+# path that works from the Oracle datacenter). A ytmusicapi copy of this
+# route would answer with [] behind the consent page and also break the
+# client's expected {"title", "tracks", "playlistId"} shape.
 _RECOMMEND_PATHS = {
     "/api/radio",
     "/api/recommend",
-    "/api/import/youtube/playlist",
 }
 
 
@@ -1188,8 +1192,8 @@ def _detect_host_proxy(app) -> str:
     return ""
 
 
-def register_recommend_routes(app, override: bool = True) -> None:
-    """Attach /api/radio, /api/recommend and /api/import/youtube/playlist.
+def register_recommend_routes(app, override: bool = False) -> None:
+    """Attach /api/radio and /api/recommend.
 
     Works with BOTH FastAPI and Flask apps (auto-detected). This fixes the
     "404 Not Found on /api/recommend" bug: the handlers were previously
@@ -1261,35 +1265,6 @@ def _register_flask_routes(app) -> None:
         except Exception as exc:
             return jsonify({"results": [], "error": str(exc)}), 502
 
-    @app.get("/api/import/youtube/playlist")
-    def api_import_youtube_playlist():
-        """Parse a YouTube / YouTube Music playlist into importable tracks.
-
-        Query params: `playlist_id` (or `url` with `list=...`), `limit`,
-        `offset` (batch paging; 0-based slice into the resolved track list).
-        Returns a plain JSON list so older Flutter clients keep working.
-        """
-        from flask import jsonify, request
-
-        params = request.args
-        raw_id = (params.get("playlist_id") or "").strip()
-        raw_url = (params.get("url") or "").strip()
-        if not raw_id and raw_url:
-            try:
-                from urllib.parse import parse_qs, urlparse
-
-                raw_id = (parse_qs(urlparse(raw_url).query).get("list") or [""])[0].strip()
-            except Exception:
-                raw_id = ""
-        limit = min(max(_as_int(params.get("limit"), 200), 1), 500)
-        offset = max(_as_int(params.get("offset"), 0), 0)
-        if not raw_id:
-            return jsonify({"error": "playlist_id (or url with list=) is required"}), 400
-        try:
-            tracks = playlist_tracks(raw_id, offset + limit)
-            return jsonify(tracks[offset : offset + limit])
-        except Exception as exc:
-            return jsonify({"error": str(exc)}), 502
 
 
 def _register_fastapi_routes(app) -> None:
@@ -1347,30 +1322,3 @@ def _register_fastapi_routes(app) -> None:
                 status_code=502, content={"results": [], "error": str(exc)}
             )
 
-    @app.get("/api/import/youtube/playlist")
-    async def api_import_youtube_playlist(request: Request):
-        """Parse a YouTube / YouTube Music playlist into importable tracks.
-
-        Query params: `playlist_id` (or `url` with `list=...`), `limit`,
-        `offset` (batch paging; 0-based slice into the resolved track list).
-        Returns a plain JSON list so older Flutter clients keep working.
-        """
-        params = request.query_params
-        raw_id = (params.get("playlist_id") or "").strip()
-        raw_url = (params.get("url") or "").strip()
-        if not raw_id and raw_url:
-            try:
-                from urllib.parse import parse_qs, urlparse
-
-                raw_id = (parse_qs(urlparse(raw_url).query).get("list") or [""])[0].strip()
-            except Exception:
-                raw_id = ""
-        limit = min(max(_as_int(params.get("limit"), 200), 1), 500)
-        offset = max(_as_int(params.get("offset"), 0), 0)
-        if not raw_id:
-            return _err(400, "playlist_id (or url with list=) is required")
-        try:
-            tracks = await playlist_tracks_async(raw_id, offset + limit)
-            return tracks[offset : offset + limit]
-        except Exception as exc:
-            return _err(502, exc)

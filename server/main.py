@@ -3,6 +3,8 @@ import functools
 import os
 import threading
 import time
+from urllib.parse import parse_qs, urlparse
+
 import yt_dlp
 import httpx
 from typing import Any, List, Optional
@@ -26,7 +28,8 @@ PROXY_URL = "socks5://127.0.0.1:1080"
 CACHE_DIR = "/tmp/opentube_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-URL_CACHE_TTL = 45 * 60  # resolved stream URLs are stable for ~45 min
+# Resolved media URLs are cached with a TTL derived from YouTube's own `expire`
+# parameter (see _stream_ttl_for_url) — see STREAM_TTL_* below.
 
 # --- Lightweight TTL cache for search / radio / recommend -------------------
 # Prevents redundant heavy yt-dlp calls for identical queries. TTL = 5 minutes.
@@ -118,6 +121,12 @@ def _cache_set_ttl(key, value, ttl):
         TTL_CACHE[key] = (time.time() + ttl, value)
 
 
+def _cache_pop(key):
+    """Invalidate a cached entry (used when a link turns out to be dead)."""
+    with _CACHE_LOCK:
+        TTL_CACHE.pop(key, None)
+
+
 async def cached(cache_key, ttl_seconds, producer):
     """Async TTL cache with single-flight semantics.
 
@@ -134,6 +143,57 @@ async def cached(cache_key, ttl_seconds, producer):
     if value is not None:
         _cache_set_ttl(cache_key, value, ttl_seconds)
     return value
+
+
+# --- Stream URL resolution cache -------------------------------------------
+# YouTube's signed media URLs carry an `expire` unix timestamp (~6h out for the
+# android player client). We parse it and cache for exactly that long, minus a
+# safety margin so we never hand the client a link that dies mid-playback.
+STREAM_TTL_MARGIN = 10 * 60        # stop using a link this long before it dies
+STREAM_TTL_FALLBACK = 45 * 60      # used when the URL has no readable expire
+STREAM_TTL_MAX = 6 * 60 * 60       # never trust a link longer than this
+STREAM_RESOLVE_TIMEOUT = 20.0      # yt-dlp spawn must not hang playback forever
+
+# Per-video single-flight locks: asyncio.Lock is bound to the running loop, so
+# these are keyed by (loop id, video id) and cleared when they pile up.
+_STREAM_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
+
+
+def _stream_lock(video_id: str):
+    """One lock per (event loop, video id) so identical concurrent requests
+    for the same track share a single yt-dlp resolve."""
+    loop_key = (id(asyncio.get_running_loop()), video_id)
+    lock = _STREAM_LOCKS.get(loop_key)
+    if lock is None:
+        with _CACHE_LOCK:
+            lock = _STREAM_LOCKS.get(loop_key)
+            if lock is None:
+                if len(_STREAM_LOCKS) > MAX_CACHE_ENTRIES:
+                    _STREAM_LOCKS.clear()
+                lock = asyncio.Lock()
+                _STREAM_LOCKS[loop_key] = lock
+    return lock
+
+
+def _stream_ttl_for_url(url: str) -> float:
+    """How long a resolved media URL is safe to cache.
+
+    Reads YouTube's own `expire` parameter. Falls back to a fixed TTL when it
+    is missing/unparseable, and clamps to a sane maximum so a bogus far-future
+    timestamp cannot pin a dead link in the cache forever.
+    """
+    try:
+        expire = parse_qs(urlparse(url).query).get("expire", [None])[0]
+        if not expire:
+            return STREAM_TTL_FALLBACK
+        ttl = float(expire) - time.time() - STREAM_TTL_MARGIN
+    except (TypeError, ValueError, IndexError):
+        return STREAM_TTL_FALLBACK
+    if ttl <= 0:
+        # Already (nearly) expired: keep it briefly rather than dropping it,
+        # so a burst of requests still shares one resolution attempt.
+        return STREAM_TTL_FALLBACK
+    return min(ttl, STREAM_TTL_MAX)
 
 
 def get_ydl_opts(extra=None):
@@ -229,7 +289,29 @@ async def search_tracks(q: str, limit: int = 10, offset: int = 0):
 @app.get("/api/import/youtube/playlist")
 async def import_youtube_playlist(playlist_id: str = None, url: str = None,
                                   limit: int = None, offset: int = 0):
-    target_url = url if url else f"https://www.youtube.com/playlist?list={playlist_id}"
+    """Parse a YouTube / YouTube Music playlist into importable tracks.
+
+    Accepts a bare `playlist_id`, a full `url` (plain YouTube watch / playlist
+    links as well as music.youtube.com links, incl. extra params like &si=),
+    or both. `limit`/`offset` slice the resolved track list for batched
+    imports. Always returns {"title", "tracks", "playlistId"} (HTTP 200) on
+    success; raises HTTPException(400/502) otherwise — never a bare list.
+    """
+    raw_url = (url or "").strip()
+    raw_id = (playlist_id or "").strip()
+    if not raw_id and raw_url:
+        try:
+            raw_id = (
+                parse_qs(urlparse(raw_url).query).get("list") or [""]
+            )[0].strip()
+        except Exception:
+            raw_id = ""
+    if not raw_id:
+        raise HTTPException(
+            status_code=400,
+            detail="playlist_id (or url with list=) is required",
+        )
+    target_url = f"https://www.youtube.com/playlist?list={raw_id}"
     # Import metadata is expensive and rarely changes: cache the parsed result.
     cache_key = f"import_pl:{target_url}"
 
@@ -239,7 +321,7 @@ async def import_youtube_playlist(playlist_id: str = None, url: str = None,
 
     res = await cached(cache_key, TTL_SECONDS, producer)
     if res is None:
-        raise HTTPException(status_code=400, detail="Failed to parse playlist")
+        raise HTTPException(status_code=502, detail="Failed to parse playlist")
     offset = max(0, offset)
     tracks = res.get("tracks") or []
     if limit:
@@ -248,6 +330,7 @@ async def import_youtube_playlist(playlist_id: str = None, url: str = None,
         tracks = tracks[offset:]
     return {
         "title": res.get("title") or "YouTube Playlist",
+        "playlistId": raw_id,
         "tracks": tracks
     }
 
@@ -377,11 +460,47 @@ async def recommend_tracks(body: RecommendBody):
     return {"results": results}
 
 
-async def get_direct_stream_url(video_id: str) -> str:
-    cached_url = _cache_get(f"stream:{video_id}")
-    if cached_url:
-        return cached_url
+async def get_direct_stream_url(video_id: str, force: bool = False) -> str:
+    """Resolve (and cache) the direct audio URL for a video.
 
+    This is the hot path for playback: the client asks for /api/audio/stream as
+    soon as a track is tapped, so any miss here costs a full yt-dlp subprocess
+    spawn (~2-3s) before a single byte of audio can flow.
+
+    Three things keep that off the critical path:
+
+    1. TTL cache keyed on the video id.
+    2. The TTL is derived from YouTube's own `expire` query parameter (see
+       _stream_ttl_for_url) rather than a fixed constant, so a link is reused
+       for its whole real lifetime (~6h) instead of being thrown away early.
+    3. Single-flight: concurrent requests for the SAME uncached video share one
+       resolve instead of each spawning its own yt-dlp process. Without this, a
+       burst of listeners (or a client retry) multiplies the cost.
+
+    `force` bypasses the cache but keeps the lock, so a caller recovering from a
+    dead link still cannot stampede upstream.
+    """
+    cache_key = f"stream:{video_id}"
+    if not force:
+        cached_url = _cache_get(cache_key)
+        if cached_url:
+            return cached_url
+
+    lock = _stream_lock(video_id)
+    async with lock:
+        # Re-check: another waiter may have resolved it while we queued.
+        if not force:
+            cached_url = _cache_get(cache_key)
+            if cached_url:
+                return cached_url
+
+        direct_url = await _resolve_stream_url(video_id)
+        _cache_set_ttl(cache_key, direct_url, _stream_ttl_for_url(direct_url))
+        return direct_url
+
+
+async def _resolve_stream_url(video_id: str) -> str:
+    """Spawn yt-dlp and return the direct media URL. Raises on failure."""
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     cmd = [
         YTDLP_BIN,
@@ -394,32 +513,67 @@ async def get_direct_stream_url(video_id: str) -> str:
         video_url
     ]
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, _ = await proc.communicate()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=STREAM_RESOLVE_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Timed out resolving stream for {video_id}",
+        )
 
     direct_url = stdout.decode().strip()
     if not direct_url or not direct_url.startswith("http"):
-        raise HTTPException(status_code=500, detail="Failed to resolve audio stream URL")
-
-    _cache_set_ttl(f"stream:{video_id}", direct_url, URL_CACHE_TTL)
+        err = (stderr.decode().strip() or "unknown error")[:200]
+        raise HTTPException(
+            status_code=502, detail=f"Failed to resolve audio stream URL: {err}"
+        )
     return direct_url
+
+
+# Reused across requests: building an httpx client (and its SOCKS connection
+# pool) per playback is wasteful, and audio streaming is bursty.
+_http_client: Optional[httpx.AsyncClient] = None
+_http_client_lock = asyncio.Lock()
+
+
+async def _get_http_client() -> httpx.AsyncClient:
+    """Shared proxied httpx client for upstream media requests."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        async with _http_client_lock:
+            if _http_client is None or _http_client.is_closed:
+                _http_client = httpx.AsyncClient(
+                    proxy=PROXY_URL,
+                    timeout=httpx.Timeout(30.0, read=60.0),
+                    limits=httpx.Limits(
+                        max_connections=100, max_keepalive_connections=20
+                    ),
+                    follow_redirects=True,
+                )
+    return _http_client
 
 
 @app.api_route("/api/audio/stream", methods=["GET", "HEAD"])
 async def stream_audio(id: str, request: Request):
-    safe_id = "".join([c for c in id if c.isalnum() or c in ('-', '_')])
-    cached_file = os.path.join(CACHE_DIR, f"{safe_id}.m4a")
+    """Proxy an audio stream from YouTube, with range-request support.
 
-    if os.path.exists(cached_file) and os.path.getsize(cached_file) > 10000:
-        return FileResponse(
-            cached_file,
-            media_type="audio/mp4",
-            filename=f"{safe_id}.m4a"
-        )
+    The expensive part is *resolving* the media URL (a yt-dlp subprocess),
+    not streaming it, so that resolution is cached by
+    get_direct_stream_url() and keyed on the video id. Once resolved, this
+    endpoint only forwards bytes — the client starts hearing audio immediately.
+
+    Note: there is no server-side file cache. The direct URL is valid for
+    hours and is proxied on demand, so buffering whole tracks to disk would
+    just trade CPU/disk for latency.
+    """
+    safe_id = "".join([c for c in id if c.isalnum() or c in ('-', '_')])
 
     direct_url = await get_direct_stream_url(safe_id)
 
@@ -427,9 +581,21 @@ async def stream_audio(id: str, request: Request):
     if "range" in request.headers:
         client_headers["range"] = request.headers["range"]
 
-    client = httpx.AsyncClient(proxy=PROXY_URL, timeout=30.0)
+    client = await _get_http_client()
     upstream_req = client.build_request("GET", direct_url, headers=client_headers)
     upstream_resp = await client.send(upstream_req, stream=True)
+
+    # A 403/404 here means the cached link died before its advertised expiry
+    # (YouTube can revoke or rate-limit at any time). Drop it and resolve once
+    # more so the user's retry succeeds instead of getting stuck.
+    if upstream_resp.status_code in (403, 404) and not client_headers.get("range"):
+        await upstream_resp.aclose()
+        _cache_pop(f"stream:{safe_id}")
+        direct_url = await get_direct_stream_url(safe_id, force=True)
+        upstream_req = client.build_request(
+            "GET", direct_url, headers=client_headers
+        )
+        upstream_resp = await client.send(upstream_req, stream=True)
 
     async def stream_generator():
         try:
@@ -437,11 +603,13 @@ async def stream_audio(id: str, request: Request):
                 yield chunk
         finally:
             await upstream_resp.aclose()
-            await client.aclose()
 
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Type": upstream_resp.headers.get("content-type", "audio/mp4"),
+        # The URL is already cached server-side and re-resolved on demand, so
+        # let the client (and any CDN in between) reuse it briefly.
+        "Cache-Control": "private, max-age=300",
     }
     if "content-length" in upstream_resp.headers:
         headers["Content-Length"] = upstream_resp.headers["content-length"]
@@ -475,5 +643,9 @@ async def stream_audio(id: str, request: Request):
 # ---------------------------------------------------------------------------
 from recommend import register_recommend_routes
 
-register_recommend_routes(app)
+# override=False: recommend.py owns /api/radio, /api/recommend and its own
+# import copy, but it must NEVER replace the canonical yt-dlp implementation
+# above — yt-dlp + SOCKS5 proxy is the path that works from the Oracle host,
+# while bare ytmusicapi gets a consent page and answers with [].
+register_recommend_routes(app, override=False)
 

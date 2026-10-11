@@ -682,18 +682,22 @@ def test_gather_partial(rec) -> None:
 # 4. Route wiring
 # ---------------------------------------------------------------------------
 class FakeFastAPIApp:
-    routes: list = []
+    # Force FastAPI detection (the module heuristic).
+    __module__ = "fastapi.applications"
 
-    def get(self, path):
+    def __init__(self):
+        self.routes = []
+
+    def get(self, path, **k):
         def deco(fn):
-            FakeFastAPIApp.routes.append(("GET", path))
+            self.routes.append(("GET", path))
             return fn
 
         return deco
 
-    def post(self, path):
+    def post(self, path, **k):
         def deco(fn):
-            FakeFastAPIApp.routes.append(("POST", path))
+            self.routes.append(("POST", path))
             return fn
 
         return deco
@@ -718,12 +722,14 @@ class FakeFlaskApp:
 
 
 def test_routes_register(rec) -> None:
-    expected = ["/api/radio", "/api/recommend", "/api/import/youtube/playlist"]
-    rec.register_recommend_routes(FakeFastAPIApp())
+    expected = ["/api/radio", "/api/recommend"]
+    fake = FakeFastAPIApp()
+    rec.register_recommend_routes(fake)
     check(
         "routes register on a FastAPI app",
-        len(FakeFastAPIApp.routes) == 3,
-        str(FakeFastAPIApp.routes),
+        sorted(path for _, path in fake.routes)
+        == sorted(rec._RECOMMEND_PATHS),
+        str(fake.routes),
     )
     rec.register_recommend_routes(FakeFlaskApp())
     check(
@@ -786,6 +792,8 @@ def test_route_collision_override(rec) -> None:
             return self.router.post(path, **k)
 
     def _seed_old_routes(app):
+        # Seed only paths this module owns; the import route belongs to
+        # main.py and must never be touched by recommend.py.
         for path in rec._RECOMMEND_PATHS:
             if path == "/api/recommend":
                 app.post(path)(lambda: "OLD main.py handler")
@@ -795,17 +803,28 @@ def test_route_collision_override(rec) -> None:
     app = _PreRegisteredApp()
     _seed_old_routes(app)
     app.get("/api/search")(lambda: "search")  # not owned by this module
+    # /api/import/youtube/playlist is canonically owned by main.py (yt-dlp):
+    # recommend.py must leave it (and its response shape) untouched.
+    app.get("/api/import/youtube/playlist")(lambda: "main import")
     before = len(app.router.routes)
 
-    rec.register_recommend_routes(app)
+    # Explicit override=True: this test verifies the takeover semantics the
+    # live server relies on (default is now non-destructive).
+    rec.register_recommend_routes(app, override=True)
     after = app.router.routes
 
     owned = [r for r in after if r.path in expected]
     untouched = [r for r in after if r.path == "/api/search"]
+    kept_import = [
+        r
+        for r in after
+        if r.path == "/api/import/youtube/playlist"
+        and getattr(r.endpoint, "__module__", "") != "recommend"
+    ]
     check(
         "colliding paths are not duplicated",
-        len(owned) == 3,
-        f"{len(owned)} routes for 3 paths (was {before} before)",
+        len(owned) == 2,
+        f"{len(owned)} routes for 2 paths (was {before} before)",
     )
     check(
         "the recommend.py handler is the surviving one",
@@ -820,6 +839,11 @@ def test_route_collision_override(rec) -> None:
         f"{len(untouched)}",
     )
     check(
+        "import route stays with the host app",
+        len(kept_import) == 1,
+        f"{len(kept_import)} host import route(s)",
+    )
+    check(
         "no leftover duplicates from the pre-registration",
         len(after) == 4,
         f"{len(after)} routes total (before: {before})",
@@ -832,8 +856,8 @@ def test_route_collision_override(rec) -> None:
     kept = [r for r in app2.router.routes if r.path in expected]
     check(
         "override=False preserves the host app's handlers",
-        len(kept) == 6,
-        f"{len(kept)} routes (3 old + 3 new)",
+        len(kept) == 4,
+        f"{len(kept)} routes (2 old + 2 new)",
     )
 
 

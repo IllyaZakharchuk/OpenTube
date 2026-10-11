@@ -42,6 +42,20 @@ class SettingsController extends ChangeNotifier {
   Color get textColor => bgTheme == BgTheme.white ? Colors.black87 : Colors.white;
   Color get subTextColor => bgTheme == BgTheme.white ? Colors.black54 : Colors.white54;
 
+  /// Dynamic accent color. First tries the user-selected persistent accent, and
+  /// if none was chosen, falls back to the primary color of the currently
+  /// active Flutter theme (Theme.of(context).colorScheme.primary). The value
+  /// is resolved per build via [resolveAccentColor] so buttons always follow
+  /// the active theme and do not stay orange when the user switches themes.
+  Color get accentColor {
+    final persistent = _resolvePersistentAccent();
+    if (persistent != null) return persistent;
+
+    final theme = Theme.of(context);
+    return theme.colorScheme.primary ??
+        const Color(0xFFBB86FC); // amber fallback used only if theme is unavailable
+  }
+
   Future<void> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -76,6 +90,7 @@ class SettingsController extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('settings_app_language', code);
+    if (mounted) notifyListeners();
   }
 
   Future<void> setBgTheme(BgTheme theme) async {
