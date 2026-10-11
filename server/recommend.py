@@ -1034,17 +1034,26 @@ def build_recommendations_cached(payload: dict[str, Any]) -> list[dict]:
     return _run_sync(build_recommendations_cached_async(payload))
 
 
-def playlist_tracks(playlist_id: str, limit: int = 200) -> list[dict]:
-    """Sync entry point for playlist import (TTL cached)."""
+def playlist_tracks(playlist_id: str, limit: int = 0) -> list[dict]:
+    """Sync entry point for playlist import (TTL cached).
+
+    `limit` <= 0 means "no limit": fetch every track in the playlist.
+    """
     return _run_sync(playlist_tracks_async(playlist_id, limit))
 
 
-async def playlist_tracks_async(playlist_id: str, limit: int = 200) -> list[dict]:
-    """Fetch tracks of a YouTube / YouTube Music playlist via ytmusicapi."""
+async def playlist_tracks_async(playlist_id: str, limit: int = 0) -> list[dict]:
+    """Fetch tracks of a YouTube / YouTube Music playlist via ytmusicapi.
+
+    `limit` <= 0 means "no limit": ytmusicapi paginates through every page of
+    the playlist (its `get_playlist(limit=None)`), so large playlists (400+
+    tracks) come back complete instead of being truncated.
+    """
     pid = (playlist_id or "").strip()
     if not pid:
         return []
-    cap = min(max(limit, 1), 500)
+    # `cap is None` -> unlimited (fetch all pages); otherwise a hard cap.
+    cap = None if not (limit and limit > 0) else limit
 
     def fetch() -> list[dict] | None:
         try:
@@ -1083,7 +1092,7 @@ async def playlist_tracks_async(playlist_id: str, limit: int = 200) -> list[dict
                     "source": "yt",
                 }
             )
-            if len(out) >= cap:
+            if cap is not None and len(out) >= cap:
                 break
         return out
 

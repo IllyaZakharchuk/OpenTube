@@ -859,7 +859,14 @@ class _MainContainerScreenState extends State<MainContainerScreen>
     final controller = TextEditingController();
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (ctx) {
+        final accent = SettingsController.instance.accentColor;
+        // Pick a readable foreground for the accent background (dark text on
+        // light accents, light text on dark accents).
+        final onAccent = accent.computeLuminance() > 0.5
+            ? Colors.black
+            : Colors.white;
+        return AlertDialog(
         backgroundColor: const Color(0xFF222222),
         title: Text(AppLocale.tr('create_new_playlist')),
         content: TextField(
@@ -877,7 +884,10 @@ class _MainContainerScreenState extends State<MainContainerScreen>
             child: Text(AppLocale.tr('cancel'), style: const TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: accent,
+              foregroundColor: onAccent,
+            ),
             onPressed: () async {
               if (controller.text.trim().isNotEmpty) {
                 setState(() {
@@ -887,10 +897,11 @@ class _MainContainerScreenState extends State<MainContainerScreen>
               }
               if (ctx.mounted) Navigator.pop(ctx);
             },
-            child: Text(AppLocale.tr('create'), style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            child: Text(AppLocale.tr('create'), style: const TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
-      ),
+      );
+      },
     );
   }
 
@@ -1808,6 +1819,33 @@ class MiniPlayer extends StatelessWidget {
 class SettingsTab extends StatelessWidget {
   const SettingsTab({super.key});
 
+  /// Accent-colored section header used to separate settings categories.
+  static Widget _sectionTitle(SettingsController settings, String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Text(
+        title,
+        style: TextStyle(
+          color: settings.accentColor,
+          fontWeight: FontWeight.bold,
+          fontSize: 14,
+        ),
+      ),
+    );
+  }
+
+  /// Rounded surface container that groups the rows of a single category.
+  static Widget _sectionCard(SettingsController settings, {required Widget child}) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: settings.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = SettingsController.instance;
@@ -1838,20 +1876,10 @@ class SettingsTab extends StatelessWidget {
           body: ListView(
             padding: const EdgeInsets.all(16.0),
             children: [
-              Text(
-                settings.tr('theme'),
-                style: TextStyle(
-                  color: settings.accentColor,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Container(
-                decoration: BoxDecoration(
-                  color: settings.surfaceColor,
-                  borderRadius: BorderRadius.circular(16),
-                ),
+              // --- Категорія: Загальні ---
+              _sectionTitle(settings, settings.tr('category_general')),
+              _sectionCard(
+                settings,
                 child: Column(
                   children: [
                     ListTile(
@@ -1868,7 +1896,17 @@ class SettingsTab extends StatelessWidget {
                         );
                       },
                     ),
-                    Divider(height: 1, color: settings.textColor.withOpacity(0.08)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // --- Категорія: Вигляд ---
+              _sectionTitle(settings, settings.tr('category_appearance')),
+              _sectionCard(
+                settings,
+                child: Column(
+                  children: [
                     ListTile(
                       leading: Icon(Icons.palette, color: settings.accentColor),
                       title: Text(
@@ -1883,7 +1921,17 @@ class SettingsTab extends StatelessWidget {
                         );
                       },
                     ),
-                    Divider(height: 1, color: settings.textColor.withOpacity(0.08)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // --- Категорія: Відтворення ---
+              _sectionTitle(settings, settings.tr('category_playback')),
+              _sectionCard(
+                settings,
+                child: Column(
+                  children: [
                     ListTile(
                       leading: Icon(Icons.graphic_eq_rounded, color: settings.accentColor),
                       title: Text(
@@ -1893,7 +1941,7 @@ class SettingsTab extends StatelessWidget {
                       subtitle: Text(
                         settings.isFadeEnabled
                             ? '${(settings.fadeInMs / 1000).toStringAsFixed(1)}s / ${(settings.fadeOutMs / 1000).toStringAsFixed(1)}s'
-                            : 'Вимкнено',
+                            : settings.tr('disabled'),
                         style: TextStyle(color: settings.subTextColor),
                       ),
                       trailing: Icon(Icons.chevron_right, color: settings.subTextColor),
@@ -1903,15 +1951,25 @@ class SettingsTab extends StatelessWidget {
                         );
                       },
                     ),
-                    Divider(height: 1, color: settings.textColor.withOpacity(0.08)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // --- Категорія: Еквалайзер та пресети ---
+              _sectionTitle(settings, settings.tr('category_equalizer')),
+              _sectionCard(
+                settings,
+                child: Column(
+                  children: [
                     ListTile(
                       leading: Icon(Icons.file_upload_rounded, color: settings.accentColor),
                       title: Text(
-                        'Імпортувати пресет',
+                        settings.tr('import_preset'),
                         style: TextStyle(fontWeight: FontWeight.w500, color: settings.textColor),
                       ),
                       subtitle: Text(
-                        'Завантажити пресет із .json файлу',
+                        settings.tr('import_preset_desc'),
                         style: TextStyle(color: settings.subTextColor),
                       ),
                       trailing: Icon(Icons.chevron_right, color: settings.subTextColor),
@@ -1921,14 +1979,16 @@ class SettingsTab extends StatelessWidget {
                           if (importedName != null) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
-                                content: Text('Пресет "$importedName" успішно імпортовано та активовано :)'),
+                                content: Text(
+                                  settings.tr('import_success').replaceAll('{name}', importedName),
+                                ),
                                 backgroundColor: Colors.green,
                               ),
                             );
                           } else {
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Файл не обрано або сталася помилка читання'),
+                              SnackBar(
+                                content: Text(settings.tr('import_error')),
                                 backgroundColor: Colors.redAccent,
                               ),
                             );
@@ -1940,23 +2000,97 @@ class SettingsTab extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-              Text(
-                'Про додаток',
-                style: TextStyle(
-                  color: settings.accentColor,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
+
+              // --- Категорія: Про додаток ---
+              _sectionTitle(settings, settings.tr('about')),
+              _sectionCard(
+                settings,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: settings.accentColor.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Icon(Icons.music_note_rounded, color: settings.accentColor),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'OpenTube 1.0',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                    color: settings.textColor,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  settings.tr('app_tagline'),
+                                  style: TextStyle(color: settings.subTextColor, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Divider(height: 1, color: settings.textColor.withOpacity(0.08)),
+                      const SizedBox(height: 16),
+                      Text(
+                        settings.tr('changelog'),
+                        style: TextStyle(
+                          color: settings.accentColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: settings.accentColor.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: settings.accentColor.withOpacity(0.25)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.new_releases_rounded, color: settings.accentColor, size: 18),
+                                const SizedBox(width: 8),
+                                Text(
+                                  settings.tr('release'),
+                                  style: TextStyle(
+                                    color: settings.accentColor,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              settings.tr('release_notes'),
+                              style: TextStyle(color: settings.subTextColor, height: 1.5, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                'OpenTube Music v0.9 Beta',
-                style: TextStyle(fontWeight: FontWeight.w500, fontSize: 15, color: settings.textColor),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '• Підключено власний проксі-сервер Oracle\n• Захист від блокувань і 403 помилок :)',
-                style: TextStyle(color: settings.subTextColor, height: 1.4, fontSize: 13),
               ),
             ],
           ),

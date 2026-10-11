@@ -207,7 +207,8 @@ class YoutubeImportService {
           source: (map['source'] ?? 'yt').toString(),
         ),
       );
-      if (items.length >= limit) break;
+      // `limit` <= 0 means "no limit": keep every importable track.
+      if (limit > 0 && items.length >= limit) break;
     }
     if (items.isEmpty) {
       throw YoutubeImportParseFailure('No importable YouTube items found');
@@ -240,7 +241,8 @@ class YoutubeImportService {
   Future<List<YouTubeImportedTrack>> fetchYouTubeTracks(
     String playlistId,
     String url, {
-    int limit = 200,
+    // `limit` <= 0 means "no limit": fetch every track in the playlist.
+    int limit = 0,
     int offset = 0,
     String? customBaseUrl,
   }) async {
@@ -258,17 +260,21 @@ class YoutubeImportService {
     );
     if (direct != null) return direct;
 
+    // Fallback path (older deploys without the import route). /api/search is
+    // inherently capped, so when the caller asked for "no limit" we still use
+    // a large finite cap here rather than treating 0 as "stop immediately".
+    final fallbackCap = limit > 0 ? limit : 500;
     final queries = await _discoverPlaylistQueries(
       playlistId: listId,
       url: url,
-      limit: limit,
+      limit: fallbackCap,
       base: base,
     );
 
     final items = <YouTubeImportedTrack>[];
     final seen = <String>{};
     for (final q in queries) {
-      if (items.length >= limit) break;
+      if (items.length >= fallbackCap) break;
       final query = q.trim();
       if (query.isEmpty || !seen.add(query.toLowerCase())) continue;
       String? videoId;

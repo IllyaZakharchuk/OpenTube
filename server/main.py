@@ -324,10 +324,12 @@ async def import_youtube_playlist(playlist_id: str = None, url: str = None,
         raise HTTPException(status_code=502, detail="Failed to parse playlist")
     offset = max(0, offset)
     tracks = res.get("tracks") or []
-    if limit:
-        tracks = tracks[offset:offset + max(1, min(limit, 500))]
-    else:
-        tracks = tracks[offset:]
+    # This endpoint is a "give me the WHOLE playlist" call, not a paginated
+    # search. yt-dlp already resolved every entry (no `playlistend` is set) and
+    # the full list is cached above, so we ALWAYS return everything and IGNORE
+    # any `limit`. This guarantees 400+ track playlists are never truncated
+    # server-side, even if a stale client still sends limit=200.
+    tracks = tracks[offset:]
     return {
         "title": res.get("title") or "YouTube Playlist",
         "playlistId": raw_id,
