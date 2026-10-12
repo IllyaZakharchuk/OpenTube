@@ -44,7 +44,9 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
   bool isFavorite = false;
   late bool isShuffleActive;
   late bool isRepeatActive;
-  Duration duration = const Duration(minutes: 3, seconds: 30);
+  // Start unknown (0). It is filled from the song's real metadata duration
+  // and then corrected live by the audio engine — never a fake 3:30.
+  Duration duration = Duration.zero;
   Duration position = Duration.zero;
 
   late final AnimationController _rotationController;
@@ -110,8 +112,15 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
 
     _mediaItemSub = widget.audioHandler.mediaItem.listen((item) {
       if (!mounted) return;
-      if (item?.duration != null) {
-        setState(() => duration = item!.duration!);
+      if (item?.duration != null && item!.duration!.inSeconds > 0) {
+        setState(() => duration = item.duration!);
+      } else {
+        // Media item has no real length: fall back to the song's metadata
+        // duration so the UI never shows a fake fixed value.
+        final secs = widget.songNotifier.value?.durationSec;
+        if (secs != null && secs > 0) {
+          setState(() => duration = Duration(seconds: secs));
+        }
       }
     });
   }

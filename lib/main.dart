@@ -803,8 +803,16 @@ class _MainContainerScreenState extends State<MainContainerScreen>
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
+      // Keep the sheet above the system navigation bar (back/home/recents)
+      // so its actions are never covered by the OS gesture area.
+      useSafeArea: true,
       builder: (ctx) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 20.0, horizontal: 8.0),
+        padding: const EdgeInsets.only(
+          top: 20.0,
+          bottom: 20.0,
+          left: 8.0,
+          right: 8.0,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1009,9 +1017,13 @@ class _MainContainerScreenState extends State<MainContainerScreen>
       await Future.delayed(const Duration(milliseconds: 250));
       final totalMs = await DspEngine.instance.duration();
 
+      // Prefer the live engine duration; if the engine can't report it yet,
+      // fall back to the song's metadata duration. Never fake a fixed length.
       final trackDuration = totalMs > 0
           ? Duration(milliseconds: totalMs)
-          : const Duration(minutes: 3, seconds: 30);
+          : (song.durationSec != null && song.durationSec! > 0
+              ? Duration(seconds: song.durationSec!)
+              : Duration.zero);
 
       if (customHandler != null) {
         await customHandler.updateMetadata(
@@ -1449,10 +1461,25 @@ class _DiscoverTabState extends State<DiscoverTab> {
                 hintText: AppLocale.tr('search_web_hint'),
                 hintStyle: TextStyle(color: SettingsController.instance.subTextColor),
                 prefixIcon: Icon(Icons.search, color: SettingsController.instance.accentColor),
-                suffixIcon: IconButton(
-                  icon: Icon(Icons.send, color: SettingsController.instance.accentColor),
-                  onPressed: () => _search(_searchController.text),
-                ),
+                suffixIcon: _isSearching
+                    // Small inline "searching" indicator lives in the search
+                    // field itself, so we don't need a separate full-page
+                    // spinner that duplicates this state.
+                    ? Padding(
+                        padding: const EdgeInsets.all(14.0),
+                        child: SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: SettingsController.instance.accentColor,
+                          ),
+                        ),
+                      )
+                    : IconButton(
+                        icon: Icon(Icons.send, color: SettingsController.instance.accentColor),
+                        onPressed: () => _search(_searchController.text),
+                      ),
                 border: InputBorder.none,
                 contentPadding: const EdgeInsets.symmetric(vertical: 14),
               ),
@@ -1460,14 +1487,12 @@ class _DiscoverTabState extends State<DiscoverTab> {
           ),
           const SizedBox(height: 20),
 
-          if (_isSearching)
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: CircularProgressIndicator(color: SettingsController.instance.accentColor),
-              ),
-            )
-          else if (_searchResults.isNotEmpty) ...[
+          // Note: the "searching" indicator is the small spinner inside the
+          // search field (see suffixIcon). We intentionally do NOT render a
+          // second full-page spinner here — it duplicated that state and made
+          // the whole feed jump. While searching we simply keep showing the
+          // previous content until fresh results arrive.
+          if (_searchResults.isNotEmpty) ...[
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [

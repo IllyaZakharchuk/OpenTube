@@ -14,6 +14,9 @@ class Song {
   final String? artworkUrl;
   final String? trackId;
   int playCount;
+  /// Real track length in seconds (from the backend metadata / yt-dlp).
+  /// Null when unknown — never fake a fixed duration in that case.
+  final int? durationSec;
 
   Song({
     required this.title,
@@ -23,6 +26,7 @@ class Song {
     this.artworkUrl,
     this.trackId,
     this.playCount = 0,
+    this.durationSec,
   });
 
   Map<String, dynamic> toJson() => {
@@ -32,6 +36,7 @@ class Song {
         'isOnline': isOnline,
         'artworkUrl': artworkUrl,
         'trackId': trackId,
+        if (durationSec != null) 'durationSec': durationSec,
       };
 
   factory Song.fromJson(Map<String, dynamic> json) => Song(
@@ -42,6 +47,8 @@ class Song {
         artworkUrl: json['artworkUrl'] ?? json['thumbnail'],
         trackId: json['trackId'] ?? json['id'] ?? json['videoId'],
         playCount: (json['playCount'] as num?)?.toInt() ?? 0,
+        durationSec: (json['durationSec'] as num?)?.toInt() ??
+            (json['duration'] as num?)?.toInt(),
       );
 
   /// Creates a copy of this song, overriding only the provided fields.
@@ -53,6 +60,7 @@ class Song {
     String? artworkUrl,
     String? trackId,
     int? playCount,
+    int? durationSec,
   }) {
     return Song(
       title: title ?? this.title,
@@ -62,6 +70,7 @@ class Song {
       artworkUrl: artworkUrl ?? this.artworkUrl,
       trackId: trackId ?? this.trackId,
       playCount: playCount ?? this.playCount,
+      durationSec: durationSec ?? this.durationSec,
     );
   }
 
@@ -419,6 +428,7 @@ class MusicService {
         isOnline: true,
         artworkUrl: map['thumbnail'] ?? map['artworkUrl'],
         trackId: map['id'] ?? map['videoId'] ?? map['trackId'],
+        durationSec: (map['duration'] as num?)?.toInt(),
       );
     }).toList();
   }

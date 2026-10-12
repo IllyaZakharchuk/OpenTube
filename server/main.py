@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import os
+import re
 import threading
 import time
 from urllib.parse import parse_qs, urlparse
@@ -229,17 +230,91 @@ def _norm_entry(entry):
     if not thumb and isinstance(thumbs, list) and thumbs:
         thumb = thumbs[-1].get("url")
     uploader = entry.get("uploader") or entry.get("channel") or ""
+    # Real track length in seconds (yt-dlp exposes this on flat entries). The
+    # app renders it directly, so search/radio results now show true durations
+    # instead of a hardcoded placeholder.
+    duration = entry.get("duration")
+    if isinstance(duration, float):
+        duration = int(round(duration))
     return {
         "id": vid,
         "videoId": vid,
         "title": entry.get("title") or "",
         "uploader": uploader,
         "artist": uploader,
-        "duration": entry.get("duration"),
+        "duration": duration,
         "thumbnail": thumb,
         "artworkUrl": thumb,
         "url": f"https://www.youtube.com/watch?v={vid}",
     }
+
+
+# Words that almost always mark a NON-music upload (podcast, vlog, tutorial,
+# reaction, etc.). Used to keep search/recommendation results music-only.
+_NON_MUSIC_RE = re.compile(
+    r"\b(podcast|episode|ep\.?\s*\d+|vlog|tutorial|how\s+to|reaction|"
+    r"interview|documentary|trailer|gameplay|walkthrough|review|unboxing|"
+    r"news|highlights?|full\s+match|asmr|meditation|workout\s+routine|"
+    r"recipe|cooking|workout|compilation\s+of\s+vlog)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_music(entry) -> bool:
+    """Heuristic: does a flat yt-dlp entry look like a music track (not a
+    podcast / vlog / tutorial / reaction video)?
+
+    We only *reject* clear non-music signals — never require a positive music
+    signal — so unofficial uploads, covers and short cuts still pass. yt-dlp
+    flat entries usually omit `categories`, so we lean on title/channel
+    keywords plus the (optional) category list when present.
+    """
+    if not entry:
+        return False
+    cats = entry.get("categories")
+    if isinstance(cats, list) and cats:
+        # If YouTube tagged it, honor an explicit non-music category.
+        joined = " ".join(str(c).lower() for c in cats)
+        if any(
+            bad in joined
+            for bad in ("nonprofit", "activism", "howto", "how-to", "education",
+                        "gaming", "sports", "travel", "science", "technology",
+                        "news", "politics", "comedy", "film", "animation",
+                        "autos", "pets")
+        ):
+            return False
+        if "music" in joined:
+            return True
+    title = entry.get("title") or ""
+    if _NON_MUSIC_RE.search(title):
+        return False
+    return True
+
+
+def _extract_music(target, count):
+    """Like `_extract_flat` but keeps only entries that look like music.
+
+    Over-fetches from yt-dlp (3x) so that after dropping non-music clips we
+    still return close to `count` tracks. Never raises (partial-safe).
+    """
+    ydl_opts = get_ydl_opts({'extract_flat': 'in_playlist'})
+    out = []
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            res = ydl.extract_info(target, download=False)
+            for entry in (res.get("entries") or []):
+                if not entry:
+                    continue
+                if not _looks_like_music(entry):
+                    continue
+                norm = _norm_entry(entry)
+                if norm:
+                    out.append(norm)
+                if len(out) >= count:
+                    break
+    except Exception as e:
+        print(f"[ytdlp] music extract failed for {target}: {e}")
+    return out
 
 
 def _extract_flat(target, count):
@@ -278,9 +353,12 @@ async def search_tracks(q: str, limit: int = 10, offset: int = 0):
 
     async def producer():
         # Over-fetch then slice so `offset` works with ytsearch{limit}.
+        # We fetch 3x and filter to music-only so that after dropping podcasts/
+        # vlogs/reaction clips the page still fills with real tracks.
         count = offset + limit
-        query = f"ytsearch{count}:{q}"
-        return await to_thread(_extract_flat, query, count)
+        fetch_n = min(count * 3, 60)
+        query = f"ytsearch{fetch_n}:{q}"
+        return await to_thread(_extract_music, query, fetch_n)
 
     results = await cached(cache_key, TTL_SECONDS, producer)
     return {"query": q, "results": (results or [])[offset:offset + limit]}

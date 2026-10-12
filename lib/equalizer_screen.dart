@@ -13,6 +13,14 @@ class EqualizerScreen extends StatelessWidget {
     return '${freq.toInt()}';
   }
 
+  /// Small dB tick label used by the vertical scale next to the EQ bands.
+  Widget _dbTick(String label, Color color) {
+    return Text(
+      label,
+      style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.bold),
+    );
+  }
+
   Widget _tuningRow(
     SettingsController settings,
     Color accent,
@@ -300,42 +308,98 @@ class EqualizerScreen extends StatelessWidget {
               ),
               const SizedBox(height: 16),
 
+              const SizedBox(height: 8),
               // 10-смуговий еквалайзер
               Container(
-                padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 8),
+                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
                 decoration: BoxDecoration(
                   color: settings.surfaceColor,
                   borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: accent.withOpacity(0.12)),
                 ),
                 child: Column(
                   children: [
+                    // Заголовок + швидке скидання смуг
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          settings.tr('equalizer'),
+                          style: TextStyle(
+                            color: settings.textColor,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: eq.isEnabled
+                              ? () {
+                                  for (int i = 0; i < eq.bands.length; i++) {
+                                    eq.setBandGain(i, 0);
+                                  }
+                                }
+                              : null,
+                          icon: Icon(Icons.restart_alt_rounded, size: 16, color: accent),
+                          label: Text(
+                            settings.tr('reset'),
+                            style: TextStyle(color: accent, fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
                     SizedBox(
-                      height: 190,
+                      height: 210,
                       child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: List.generate(eq.bands.length, (idx) {
-                          final band = eq.bands[idx];
-                          return Expanded(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // Шкала дБ зліва для орієнтиру
+                          Padding(
+                            padding: const EdgeInsets.only(right: 4, top: 18, bottom: 22),
                             child: Column(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Text(
-                                  '${band.gainDb > 0 ? "+" : ""}${band.gainDb.toStringAsFixed(1)}',
-                                  style: TextStyle(
-                                    color: settings.subTextColor,
-                                    fontSize: 9,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
+                                _dbTick('+10', accent),
+                                _dbTick('0', settings.subTextColor),
+                                _dbTick('-10', accent),
+                              ],
+                            ),
+                          ),
+                          ...List.generate(eq.bands.length, (idx) {
+                            final band = eq.bands[idx];
+                            return Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 1.5),
+                                child: Column(
+                                  children: [
+                                    SizedBox(
+                                      height: 16,
+                                      child: FittedBox(
+                                        fit: BoxFit.scaleDown,
+                                        child: Text(
+                                          '${band.gainDb > 0 ? "+" : ""}${band.gainDb.toStringAsFixed(1)}',
+                                          style: TextStyle(
+                                            color: band.gainDb == 0
+                                                ? settings.subTextColor
+                                                : accent,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
                                 Expanded(
                                   child: RotatedBox(
                                     quarterTurns: 3,
                                     child: SliderTheme(
                                       data: SliderThemeData(
-                                        trackHeight: 3,
+                                        trackHeight: 4,
                                         activeTrackColor: accent,
                                         inactiveTrackColor: settings.backgroundColor,
                                         thumbColor: accent,
-                                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                                        thumbShape: const RoundSliderThumbShape(
+                                          enabledThumbRadius: 7,
+                                        ),
                                         overlayShape: SliderComponentShape.noOverlay,
                                       ),
                                       child: Slider(
@@ -349,18 +413,26 @@ class EqualizerScreen extends StatelessWidget {
                                     ),
                                   ),
                                 ),
-                                Text(
-                                  _formatFreq(band.freq),
-                                  style: TextStyle(
-                                    color: settings.textColor,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
+                                SizedBox(
+                                  height: 20,
+                                  child: FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: Text(
+                                      _formatFreq(band.freq),
+                                      style: TextStyle(
+                                        color: settings.textColor,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ],
-                            ),
-                          );
-                        }),
+                                ),
+                              ),
+                            );
+                          }),
+                        ],
                       ),
                     ),
                   ],
@@ -374,9 +446,22 @@ class EqualizerScreen extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: settings.surfaceColor,
                   borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: accent.withOpacity(0.12)),
                 ),
                 child: Column(
                   children: [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        settings.tr('dsp_effects'),
+                        style: TextStyle(
+                          color: settings.textColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [

@@ -75,7 +75,9 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
       title: title,
       artist: artist,
       artUri: resolvedArtUri,
-      duration: duration ?? const Duration(minutes: 3, seconds: 30),
+      // Real length when known; otherwise leave it unset (Duration.zero) so
+      // the UI shows the live engine duration instead of a fake fixed value.
+      duration: duration ?? Duration.zero,
     );
 
     mediaItem.add(item);
