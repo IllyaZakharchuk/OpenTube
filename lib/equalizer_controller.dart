@@ -102,10 +102,16 @@ class EqualizerController extends ChangeNotifier {
   double limiterReleaseMs = 80;   // 20 .. 300 мс
   double limiterLookaheadMs = 4;  // 1 .. 10 мс
 
+  /// Name of the default stock preset (Stage 4).
+  static const String stockPresetName = 'OpenTube Balanced';
+
   List<EqBand> bands = DspConfig.flat10().bands;
-  String currentPresetName = 'KZ ZS10 Pro X Stage';
+  String currentPresetName = stockPresetName;
 
   final Map<String, List<double>> factoryPresets = {
+    // Stock daily curve (Stage 4): gentle bass shelf, slight mud cut and a
+    // mild presence/air lift — safe improvement for most IEMs / BT headsets.
+    'OpenTube Balanced': [2.5, 2.0, 1.0, 0.0, -0.5, 0.0, 0.5, 1.0, 1.0, 0.5],
     'Flat': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     'Air & Clarity': [2.5, 2.0, 0.5, -1.5, -1.0, 0.5, 1.5, 3.0, 4.5, 6.0],
     'Punch Bass': [6.0, 5.0, 3.0, 0.5, -1.0, 0.0, 1.0, 2.0, 2.5, 2.0],
@@ -150,7 +156,30 @@ class EqualizerController extends ChangeNotifier {
     limiterCeilingDb = prefs.getDouble('dsp_limiter') ?? -1.5;
     limiterReleaseMs = prefs.getDouble('dsp_lim_release') ?? 80;
     limiterLookaheadMs = prefs.getDouble('dsp_lim_look') ?? 4;
-    currentPresetName = prefs.getString('dsp_preset') ?? 'Flat';
+    currentPresetName = prefs.getString('dsp_preset') ?? stockPresetName;
+
+    // Stage 4: one-time migration — installs that never left the old 'Flat'
+    // default (or have no preset saved yet) switch to the balanced stock
+    // preset. Manually tuned band gains are always preserved.
+    if (!(prefs.getBool('dsp_stock_migrated') ?? false)) {
+      final savedPreset = prefs.getString('dsp_preset');
+      final savedBandsRaw = prefs.getString('dsp_bands');
+      bool gainsUntouched = true;
+      if (savedBandsRaw != null) {
+        try {
+          final List decoded = jsonDecode(savedBandsRaw);
+          gainsUntouched = decoded.every((g) => (g as num).abs() < 0.01);
+        } catch (_) {
+          gainsUntouched = false;
+        }
+      }
+      if (savedPreset == null || (savedPreset == 'Flat' && gainsUntouched)) {
+        currentPresetName = stockPresetName;
+        await prefs.setString('dsp_preset', stockPresetName);
+        await prefs.remove('dsp_bands');
+      }
+      await prefs.setBool('dsp_stock_migrated', true);
+    }
 
     final savedCustom = prefs.getString('dsp_custom_presets');
     if (savedCustom != null) {
@@ -378,7 +407,7 @@ class EqualizerController extends ChangeNotifier {
     if (customPresets.containsKey(name)) {
       customPresets.remove(name);
       if (currentPresetName == name) {
-        currentPresetName = 'Flat';
+        currentPresetName = stockPresetName;
         if (factoryPresets.containsKey(currentPresetName)) {
           applyPresetGains(factoryPresets[currentPresetName]!);
         }

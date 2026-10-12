@@ -295,6 +295,10 @@ __all__ = [
     "build_recommendations_cached_async",
     "radio_for",
     "radio_for_async",
+    "artist_tracks",
+    "artist_tracks_async",
+    "lastfm_artist_bio",
+    "lastfm_artist_bio_async",
     "playlist_tracks",
     "playlist_tracks_async",
     "yt_search",
@@ -384,6 +388,43 @@ def _ytmusic():
     return _yt
 
 
+def _duration_seconds(item: dict) -> int | None:
+    """Track length in whole seconds from the many upstream payload shapes.
+
+    ytmusicapi sends ``duration_seconds`` (int) on some responses and
+    ``duration`` ("3:45" string) on others; yt-dlp flat entries use a
+    numeric ``duration``. Returns None when unknown — the client renders
+    nothing instead of a fake 00:00.
+    """
+    value = item.get("duration_seconds")
+    if not value:
+        # Missing OR zero — a zero length is always bogus; fall back to the
+        # "duration" field ("3:45" string or numeric) when it exists.
+        value = item.get("duration")
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        seconds = int(round(value))
+        return seconds if seconds > 0 else None
+    text = str(value).strip()
+    if not text:
+        return None
+    if ":" not in text:
+        try:
+            seconds = int(text)
+        except ValueError:
+            return None
+        return seconds if seconds > 0 else None
+    seconds = 0
+    for part in text.split(":"):
+        try:
+            n = int(part.strip())
+        except ValueError:
+            return None
+        seconds = seconds * 60 + n
+    return seconds if seconds > 0 else None
+
+
 def _track_from_yt(item: dict) -> dict | None:
     vid = item.get("videoId")
     if not vid:
@@ -412,6 +453,7 @@ def _track_from_yt(item: dict) -> dict | None:
         "title": item.get("title") or "",
         "uploader": artist,
         "artist": artist,
+        "duration": _duration_seconds(item),
         "thumbnail": thumbs[-1]["url"] if thumbs else None,
     }
 
@@ -609,6 +651,124 @@ async def lastfm_similar_artists_async(artist: str, limit: int = 6) -> list[str]
 
     out = await _cached_async(
         f"lfm_ar:{artist.strip().lower()}|{limit}", SEARCH_TTL, lambda: _to_thread(fetch)
+    )
+    return out or []
+
+
+def _strip_html(text: str) -> str:
+    """Collapse an HTML snippet (Last.fm bios) to plain, whitespace-safe text."""
+    out: list[str] = []
+    in_tag = False
+    for ch in text:
+        if ch == "<":
+            in_tag = True
+            continue
+        if ch == ">":
+            in_tag = False
+            continue
+        if not in_tag:
+            out.append(ch)
+    cleaned = " ".join("".join(out).split())
+    # Last.fm appends a trailing "Read more on Last.fm" link — drop it.
+    marker = "Read more on Last.fm"
+    idx = cleaned.find(marker)
+    if idx != -1:
+        cleaned = cleaned[:idx].rstrip(" -–—|,")
+    return cleaned.strip()
+
+
+def lastfm_artist_bio(artist: str) -> dict:
+    """Sync entry point for Last.fm artist bio/image (TTL cached)."""
+    return _run_sync(lastfm_artist_bio_async(artist))
+
+
+async def lastfm_artist_bio_async(artist: str) -> dict:
+    """Short artist biography + photo via Last.fm ``artist.getInfo``.
+
+    Returns ``{"bio": ..., "image": ...}``; an empty dict when the API key is
+    missing, the artist is unknown upstream, or the call fails. Failures are
+    never cached (see ``_cached_async``).
+    """
+    query = (artist or "").strip()
+    if not LASTFM_API_KEY or not query:
+        return {}
+
+    def fetch() -> dict | None:
+        try:
+            res = requests.get(
+                "https://ws.audioscrobbler.com/2.0/",
+                params={
+                    "method": "artist.getInfo",
+                    "artist": query,
+                    "api_key": LASTFM_API_KEY,
+                    "format": "json",
+                },
+                timeout=6,
+            )
+            info = ((res.json() or {}).get("artist") or {})
+            bio = _strip_html(((info.get("bio") or {}).get("content") or ""))
+            image = ""
+            for entry in reversed(info.get("image") or []):
+                url = (entry or {}).get("#text") or ""
+                if url:
+                    image = url
+                    break
+            return {"bio": bio, "image": image}
+        except Exception:
+            return None
+
+    out = await _cached_async(
+        f"lfm_bio:{query.lower()}",
+        SEARCH_TTL,
+        lambda: _to_thread(fetch),
+    )
+    return out or {}
+
+
+def artist_tracks(artist: str, limit: int = 15) -> list[dict]:
+    """Sync entry point for an artist's top tracks (TTL cached)."""
+    return _run_sync(artist_tracks_async(artist, limit))
+
+
+async def artist_tracks_async(artist: str, limit: int = 15) -> list[dict]:
+    """Top tracks of an artist via ytmusicapi song search (TTL cached, partial-safe).
+
+    Results are normalized with ``_track_from_yt`` (same shape as /api/search
+    plus ``durationSec``) and ordered: entries whose artist string matches the
+    query first, topped up with unfiltered hits so slightly-off spellings
+    ("Artist - Topic", localized names) still fill the list.
+    """
+    query = (artist or "").strip()
+    if not query:
+        return []
+    fetch_n = min(max(limit * 2, 10), 25)
+
+    def fetch() -> list[dict] | None:
+        try:
+            results = _ytmusic().search(query, filter="songs", limit=fetch_n) or []  # type: ignore[arg-type]
+        except Exception:
+            return None
+        needle = query.lower()
+        matched: list[dict] = []
+        filler: list[dict] = []
+        seen: set[str] = set()
+        for item in results:
+            parsed = _track_from_yt(item)
+            if not parsed or parsed["id"] in seen:
+                continue
+            seen.add(parsed["id"])
+            parsed["durationSec"] = _as_int(item.get("duration_seconds"), 0) or None
+            hay = (parsed.get("artist") or "").lower()
+            if needle in hay or (hay and hay in needle):
+                matched.append(parsed)
+            else:
+                filler.append(parsed)
+        return (matched + filler)[:limit] or []
+
+    out = await _cached_async(
+        f"artist_tracks:{query.lower()}|{limit}",
+        SEARCH_TTL,
+        lambda: _to_thread(fetch),
     )
     return out or []
 
@@ -1087,6 +1247,7 @@ async def playlist_tracks_async(playlist_id: str, limit: int = 0) -> list[dict]:
                     "title": item.get("title") or "",
                     "artist": artist,
                     "uploader": artist,
+                    "duration": _duration_seconds(item),
                     "thumbnail": thumbs[-1]["url"] if thumbs else None,
                     "playlistId": pid,
                     "source": "yt",
@@ -1139,6 +1300,7 @@ def _as_int(value: Any, default: int) -> int:
 _RECOMMEND_PATHS = {
     "/api/radio",
     "/api/recommend",
+    "/api/artist",
 }
 
 
@@ -1274,6 +1436,41 @@ def _register_flask_routes(app) -> None:
         except Exception as exc:
             return jsonify({"results": [], "error": str(exc)}), 502
 
+    @app.get("/api/artist")
+    def api_artist():
+        from flask import jsonify, request
+
+        name = (request.args.get("name") or "").strip()
+        limit = min(max(_as_int(request.args.get("limit"), 15), 1), 50)
+        if not name:
+            return jsonify({"name": "", "bio": "", "image": "", "results": []})
+        try:
+            bio_info, tracks = _run_sync_batch(
+                [
+                    lambda: lastfm_artist_bio_async(name),
+                    lambda: artist_tracks_async(name, limit),
+                ]
+            )
+            if isinstance(bio_info, BaseException) or not isinstance(bio_info, dict):
+                bio_info = {}
+            if isinstance(tracks, BaseException) or not isinstance(tracks, list):
+                tracks = []
+            return jsonify(
+                {
+                    "name": name,
+                    "bio": bio_info.get("bio", ""),
+                    "image": bio_info.get("image", ""),
+                    "results": tracks,
+                }
+            )
+        except Exception as exc:
+            return (
+                jsonify(
+                    {"name": name, "bio": "", "image": "", "results": [], "error": str(exc)}
+                ),
+                502,
+            )
+
 
 
 def _register_fastapi_routes(app) -> None:
@@ -1330,4 +1527,27 @@ def _register_fastapi_routes(app) -> None:
             return JSONResponse(
                 status_code=502, content={"results": [], "error": str(exc)}
             )
+
+    @app.get("/api/artist")
+    async def api_artist(request: Request):
+        params = request.query_params
+        name = (params.get("name") or "").strip()
+        limit = min(max(_as_int(params.get("limit"), 15), 1), 50)
+        if not name:
+            return {"name": "", "bio": "", "image": "", "results": []}
+        bio_info, tracks = await asyncio.gather(
+            lastfm_artist_bio_async(name),
+            artist_tracks_async(name, limit),
+            return_exceptions=True,
+        )
+        if isinstance(bio_info, BaseException) or not isinstance(bio_info, dict):
+            bio_info = {}
+        if isinstance(tracks, BaseException) or not isinstance(tracks, list):
+            tracks = []
+        return {
+            "name": name,
+            "bio": bio_info.get("bio", ""),
+            "image": bio_info.get("image", ""),
+            "results": tracks,
+        }
 

@@ -36,6 +36,7 @@ class Song {
         'isOnline': isOnline,
         'artworkUrl': artworkUrl,
         'trackId': trackId,
+        'playCount': playCount,
         if (durationSec != null) 'durationSec': durationSec,
       };
 
@@ -47,9 +48,36 @@ class Song {
         artworkUrl: json['artworkUrl'] ?? json['thumbnail'],
         trackId: json['trackId'] ?? json['id'] ?? json['videoId'],
         playCount: (json['playCount'] as num?)?.toInt() ?? 0,
-        durationSec: (json['durationSec'] as num?)?.toInt() ??
-            (json['duration'] as num?)?.toInt(),
+        durationSec: parseDurationSec(json['durationSec'] ?? json['duration']),
       );
+
+  /// Parses a track duration into whole seconds. Accepts every shape the
+  /// backend may send: a numeric count of seconds (yt-dlp flat entries,
+  /// ytmusicapi `duration_seconds`), a numeric string ("215"), or the
+  /// "m:ss" / "h:mm:ss" string used by ytmusicapi (`duration`). Returns
+  /// null when unknown/invalid so the UI never fakes a length (00:00).
+  static int? parseDurationSec(dynamic value) {
+    if (value == null) return null;
+    if (value is num) {
+      final sec = value.toInt();
+      return sec > 0 ? sec : null;
+    }
+    final text = value.toString().trim();
+    if (text.isEmpty) return null;
+    if (!text.contains(':')) {
+      final sec = int.tryParse(text);
+      return (sec != null && sec > 0) ? sec : null;
+    }
+    final parts = text.split(':');
+    if (parts.length > 3) return null;
+    var seconds = 0;
+    for (final part in parts) {
+      final n = int.tryParse(part.trim());
+      if (n == null || n < 0) return null;
+      seconds = seconds * 60 + n;
+    }
+    return seconds > 0 ? seconds : null;
+  }
 
   /// Creates a copy of this song, overriding only the provided fields.
   Song copyWith({
@@ -106,6 +134,22 @@ class CustomPlaylist {
             .map((s) => Song.fromJson(s as Map<String, dynamic>))
             .toList(),
       );
+}
+
+/// Detailed artist info fetched from the backend (/api/artist): a short
+/// biography + photo (Last.fm) and the artist's top tracks (YouTube Music).
+class ArtistProfile {
+  final String name;
+  final String bio;
+  final String? imageUrl;
+  final List<Song> tracks;
+
+  const ArtistProfile({
+    required this.name,
+    this.bio = '',
+    this.imageUrl,
+    this.tracks = const [],
+  });
 }
 
 class AppLocale {
@@ -356,6 +400,55 @@ class AppLocale {
       'de': 'Zurück',
       'es': 'Atrás',
     },
+    'artist_profile': {
+      'uk': 'Профіль виконавця',
+      'en': 'Artist profile',
+      'pl': 'Profil wykonawcy',
+      'de': 'Künstlerprofil',
+      'es': 'Perfil del artista',
+    },
+    'biography': {
+      'uk': 'Біографія',
+      'en': 'Biography',
+      'pl': 'Biografia',
+      'de': 'Biografie',
+      'es': 'Biografía',
+    },
+    'no_bio': {
+      'uk': 'Біографія недоступна',
+      'en': 'No biography available',
+      'pl': 'Brak biografii',
+      'de': 'Keine Biografie verfügbar',
+      'es': 'Biografía no disponible',
+    },
+    'select_all': {
+      'uk': 'Виділити всі',
+      'en': 'Select all',
+      'pl': 'Zaznacz wszystko',
+      'de': 'Alle auswählen',
+      'es': 'Seleccionar todo',
+    },
+    'selected': {
+      'uk': 'Виділено',
+      'en': 'Selected',
+      'pl': 'Zaznaczone',
+      'de': 'Ausgewählt',
+      'es': 'Seleccionados',
+    },
+    'delete_selected': {
+      'uk': 'Видалити вибрані',
+      'en': 'Delete selected',
+      'pl': 'Usuń zaznaczone',
+      'de': 'Ausgewählte löschen',
+      'es': 'Eliminar seleccionados',
+    },
+    'add_selected_to_playlist': {
+      'uk': 'Додати вибрані до плейлиста',
+      'en': 'Add selected to playlist',
+      'pl': 'Dodaj zaznaczone do playlisty',
+      'de': 'Ausgewählte zur Playlist hinzufügen',
+      'es': 'Añadir seleccionados a la lista',
+    },
   };
 
   static String tr(String key) {
@@ -390,16 +483,41 @@ class MusicService {
             .map((item) => Song(
                   title: item['title'] ?? '',
                   path: '',
-                  artist: item['uploader'] ?? '',
+                  artist: item['uploader'] ?? item['artist'] ?? '',
                   isOnline: true,
-                  artworkUrl: item['thumbnail'],
-                  trackId: item['id'],
+                  artworkUrl: item['thumbnail'] ?? item['artworkUrl'],
+                  trackId: item['id'] ?? item['videoId'],
+                  // Keep the real length from /api/search ("duration") —
+                  // dropping it here made every added-to-library track
+                  // render 00:00.
+                  durationSec: Song.parseDurationSec(
+                      item['durationSec'] ?? item['duration']),
                 ))
             .toList();
       }
       return [];
     } catch (e) {
       debugPrint('Search error: $e');
+      return [];
+    }
+  }
+
+  /// Autocomplete hints for the search box (YouTube query suggestions via
+  /// the backend). Best-effort: any failure returns an empty list so the
+  /// UI never breaks.
+  static Future<List<String>> suggest(String query) async {
+    try {
+      final uri = Uri.parse('$baseUrl/api/suggest')
+          .replace(queryParameters: {'q': query});
+      final res = await http.get(uri).timeout(const Duration(seconds: 5));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(utf8.decode(res.bodyBytes));
+        final List list = data['suggestions'] ?? [];
+        return list.map((e) => e.toString()).toList();
+      }
+      return [];
+    } catch (e) {
+      debugPrint('Suggest error: $e');
       return [];
     }
   }
@@ -428,7 +546,8 @@ class MusicService {
         isOnline: true,
         artworkUrl: map['thumbnail'] ?? map['artworkUrl'],
         trackId: map['id'] ?? map['videoId'] ?? map['trackId'],
-        durationSec: (map['duration'] as num?)?.toInt(),
+        durationSec:
+            Song.parseDurationSec(map['durationSec'] ?? map['duration']),
       );
     }).toList();
   }
@@ -547,6 +666,52 @@ class MusicService {
     } catch (e) {
       debugPrint('Deezer similar error: $e');
       return [];
+    }
+  }
+
+  /// Artist profile (bio + photo + top tracks) from the backend /api/artist.
+  /// Best-effort: any failure returns a profile with the name only, so the
+  /// UI can still render local tracks for the artist.
+  static Future<ArtistProfile> fetchArtistProfile(String name,
+      {int limit = 15}) async {
+    final clean = name.trim();
+    if (clean.isEmpty) return const ArtistProfile(name: '');
+    try {
+      final uri = Uri.parse('$baseUrl/api/artist').replace(queryParameters: {
+        'name': clean,
+        'limit': limit.toString(),
+      });
+      final res = await http.get(uri).timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200) return ArtistProfile(name: clean);
+      final data = jsonDecode(utf8.decode(res.bodyBytes));
+      final List results = (data is Map ? data['results'] : null) ?? [];
+      final tracks = results.map((item) {
+        final map = item as Map;
+        final trackArtist = (map['artist'] as String?) ?? '';
+        return Song(
+          title: map['title'] ?? '',
+          path: '',
+          artist: trackArtist.isNotEmpty ? trackArtist : clean,
+          isOnline: true,
+          artworkUrl: map['thumbnail'],
+          trackId: map['id'],
+          durationSec: Song.parseDurationSec(
+              map['durationSec'] ?? map['duration']),
+        );
+      }).toList();
+      return ArtistProfile(
+        name: (data['name'] as String?)?.trim().isNotEmpty == true
+            ? data['name']
+            : clean,
+        bio: (data['bio'] as String?) ?? '',
+        imageUrl: (data['image'] as String?)?.isNotEmpty == true
+            ? data['image']
+            : null,
+        tracks: tracks,
+      );
+    } catch (e) {
+      debugPrint('Artist profile error: $e');
+      return ArtistProfile(name: clean);
     }
   }
 }

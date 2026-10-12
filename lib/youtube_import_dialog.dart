@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'settings_controller.dart';
 
@@ -15,13 +16,11 @@ class YoutubeImportResult {
 /// as an online reference (no local audio files) or as offline local tracks.
 class YoutubeImportModeDialog extends StatefulWidget {
   final String playlistTitle;
-  final String importUrl;
   final bool isOnlineDefault;
 
   const YoutubeImportModeDialog({
     super.key,
     required this.playlistTitle,
-    required this.importUrl,
     this.isOnlineDefault = true,
   });
 
@@ -31,14 +30,12 @@ class YoutubeImportModeDialog extends StatefulWidget {
   static Future<YoutubeImportResult?> show(
     BuildContext context, {
     required String playlistTitle,
-    required String importUrl,
     bool isOnlineDefault = true,
   }) {
     return showDialog<YoutubeImportResult>(
       context: context,
       builder: (_) => YoutubeImportModeDialog(
         playlistTitle: playlistTitle,
-        importUrl: importUrl,
         isOnlineDefault: isOnlineDefault,
       ),
     );
@@ -53,7 +50,10 @@ class _YoutubeImportModeDialogState extends State<YoutubeImportModeDialog> {
   void initState() {
     super.initState();
     _isOnline = widget.isOnlineDefault;
-    _urlController = TextEditingController(text: widget.importUrl);
+    // The field always starts empty on purpose: the user pastes the link
+    // with the one-tap clipboard button (or types it) instead of seeing a
+    // stale/pre-filled URL from a previous import.
+    _urlController = TextEditingController();
   }
 
   @override
@@ -100,6 +100,44 @@ class _YoutubeImportModeDialogState extends State<YoutubeImportModeDialog> {
               labelStyle: TextStyle(color: subTextColor),
               hintStyle: TextStyle(color: subTextColor.withOpacity(0.6)),
               prefixIcon: Icon(Icons.link_rounded, color: accent),
+              suffixIcon: IconButton(
+                icon: Icon(Icons.content_paste_rounded, color: accent),
+                tooltip: 'Вставити з буфера',
+                onPressed: () async {
+                  // Clipboard reads are async and can fail (empty clipboard,
+                  // platform restrictions, a hung platform channel) — never
+                  // fail silently: catch errors, cap the wait, always give
+                  // feedback and refresh the field + the validation state.
+                  String text = '';
+                  var failed = false;
+                  try {
+                    final data = await Clipboard.getData(Clipboard.kTextPlain)
+                        .timeout(const Duration(seconds: 4));
+                    text = (data?.text ?? '').trim();
+                  } catch (e) {
+                    failed = true;
+                    debugPrint('Clipboard read error: $e');
+                  }
+                  if (!context.mounted) return;
+                  if (failed || text.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(failed
+                            ? 'Не вдалося прочитати буфер обміну'
+                            : 'Буфер обміну порожній'),
+                      ),
+                    );
+                    setState(() {});
+                    return;
+                  }
+                  _urlController.text = text;
+                  // Move the cursor to the end so the pasted link is fully
+                  // visible and editable right away.
+                  _urlController.selection =
+                      TextSelection.collapsed(offset: text.length);
+                  setState(() {});
+                },
+              ),
               filled: true,
               fillColor: textColor.withOpacity(0.06),
               border: OutlineInputBorder(

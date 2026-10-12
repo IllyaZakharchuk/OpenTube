@@ -6,6 +6,7 @@ import 'package:audio_service/audio_service.dart';
 import 'models.dart';
 import 'settings_controller.dart';
 import 'listen_tracker.dart';
+import 'artist_profile.dart';
 
 class PlayerScreen extends StatefulWidget {
   final ValueNotifier<Song?> songNotifier;
@@ -20,6 +21,9 @@ class PlayerScreen extends StatefulWidget {
   final bool isShuffle;
   final bool isRepeat;
 
+  /// Plays a queue (e.g. an artist's track list from the profile sheet).
+  final void Function(List<Song>, int)? onPlayQueue;
+
   const PlayerScreen({
     super.key,
     required this.songNotifier,
@@ -33,6 +37,7 @@ class PlayerScreen extends StatefulWidget {
     this.onToggleFavorite,
     this.isShuffle = false,
     this.isRepeat = false,
+    this.onPlayQueue,
   });
 
   @override
@@ -525,17 +530,25 @@ class _PlayerScreenState extends State<PlayerScreen> with TickerProviderStateMix
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                     const SizedBox(height: 4),
-                                    Text(
-                                      displayArtist,
-                                      style: TextStyle(
-                                        fontFamily: 'sans-serif-rounded',
-                                        fontSize: 15,
-                                        color: settings.subTextColor,
-                                        fontWeight: FontWeight.w700,
+                                    GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () => showArtistProfileSheet(
+                                        context,
+                                        displayArtist,
+                                        onPlaySong: widget.onPlayQueue,
                                       ),
-                                      textAlign: TextAlign.center,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
+                                      child: Text(
+                                        displayArtist,
+                                        style: TextStyle(
+                                          fontFamily: 'sans-serif-rounded',
+                                          fontSize: 15,
+                                          color: settings.subTextColor,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                        textAlign: TextAlign.center,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
                                     ),
                                   ],
                                 ),

@@ -20,6 +20,7 @@ class YouTubeImportedTrack {
   final String title;
   final String artist;
   final String? thumbnailUrl;
+  final int? durationSec;
   final String source;
 
   const YouTubeImportedTrack({
@@ -28,6 +29,7 @@ class YouTubeImportedTrack {
     required this.title,
     required this.artist,
     this.thumbnailUrl,
+    this.durationSec,
     this.source = 'yt',
   });
 
@@ -37,6 +39,7 @@ class YouTubeImportedTrack {
         'title': title,
         'artist': artist,
         'thumbnailUrl': thumbnailUrl,
+        'durationSec': durationSec,
         'source': source,
       };
 
@@ -47,6 +50,8 @@ class YouTubeImportedTrack {
         title: json['title'] ?? '',
         artist: json['artist'] ?? json['uploader'] ?? '',
         thumbnailUrl: json['thumbnailUrl'] ?? json['thumbnail'],
+        durationSec: Song.parseDurationSec(
+            json['durationSec'] ?? json['duration'] ?? json['duration_seconds']),
         source: json['source'] ?? 'yt',
       );
 }
@@ -204,6 +209,8 @@ class YoutubeImportService {
                       ? 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg'
                       : null))
               ?.toString(),
+          durationSec: Song.parseDurationSec(
+              map['durationSec'] ?? map['duration'] ?? map['duration_seconds']),
           source: (map['source'] ?? 'yt').toString(),
         ),
       );
@@ -396,6 +403,9 @@ class YoutubeImportService {
           isOnline: isOnline,
           artworkUrl: track.thumbnailUrl,
           trackId: resolvedId,
+          // Persist the real length so imported playlist tracks don't
+          // render 00:00 in the player and lists.
+          durationSec: track.durationSec,
         ),
       );
     }

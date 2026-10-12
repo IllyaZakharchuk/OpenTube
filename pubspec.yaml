@@ -2,7 +2,7 @@ name: opentube
 description: "A modern open-source music player."
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -21,6 +21,7 @@ dependencies:
   permission_handler: ^12.0.3
   sqflite: ^2.4.1
   path: ^1.9.0
+  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:

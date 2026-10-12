@@ -42,20 +42,6 @@ class SettingsController extends ChangeNotifier {
   Color get textColor => bgTheme == BgTheme.white ? Colors.black87 : Colors.white;
   Color get subTextColor => bgTheme == BgTheme.white ? Colors.black54 : Colors.white54;
 
-  /// Dynamic accent color. First tries the user-selected persistent accent, and
-  /// if none was chosen, falls back to the primary color of the currently
-  /// active Flutter theme (Theme.of(context).colorScheme.primary). The value
-  /// is resolved per build via [resolveAccentColor] so buttons always follow
-  /// the active theme and do not stay orange when the user switches themes.
-  Color get accentColor {
-    final persistent = _resolvePersistentAccent();
-    if (persistent != null) return persistent;
-
-    final theme = Theme.of(context);
-    return theme.colorScheme.primary ??
-        const Color(0xFFBB86FC); // amber fallback used only if theme is unavailable
-  }
-
   Future<void> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -90,7 +76,6 @@ class SettingsController extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('settings_app_language', code);
-    if (mounted) notifyListeners();
   }
 
   Future<void> setBgTheme(BgTheme theme) async {
@@ -185,6 +170,32 @@ class SettingsController extends ChangeNotifier {
         'fade_in_time': 'Час появи (Fade-In)',
         'fade_out_time': 'Час згасання (Fade-Out)',
         'crossfade_time': 'Змішування треків (Crossfade)',
+        // Settings categories
+        'category_general': 'Загальні',
+        'category_appearance': 'Вигляд',
+        'category_playback': 'Відтворення',
+        'category_equalizer': 'Еквалайзер та пресети',
+        'disabled': 'Вимкнено',
+        // About & changelog
+        'about': 'Про додаток',
+        'app_tagline': 'Сучасний відкритий музичний плеєр',
+        'import_preset': 'Імпортувати пресет',
+        'import_preset_desc': 'Завантажити пресет із .json файлу',
+        'import_success': 'Пресет "{name}" успішно імпортовано та активовано :)',
+        'import_error': 'Файл не обрано або сталася помилка читання',
+        'changelog': 'Зміни',
+        'release': 'Реліз',
+        'release_notes': '• Розумні підказки пошуку (автоугадування)\n• Профіль виконавця: біографія та найкращі треки\n• Прогрес-бар у мініплеєрі\n• Масове виділення треків у медіатеці та плейлистах\n• Стоковий пресет еквалайзера',
+        'support_project': 'Підтримати проєкт',
+        'support_project_desc': 'Допоможіть розвитку OpenTube — донат підтримає нові функції та оновлення',
+        'report_bug': 'Повідомити про баг',
+        'report_bug_desc': 'Опиши проблему — повідомлення прийде розробнику в Telegram',
+        'report_bug_hint': 'Що пішло не так? Опиши кроки, щоб відтворити проблему…',
+        'report_bug_empty': 'Спочатку опиши проблему',
+        'report_bug_sending': 'Надсилання…',
+        'report_bug_success': 'Дякуємо! Баг-репорт надіслано ✅',
+        'report_bug_error': 'Не вдалося надіслати. Перевір зʼєднання і спробуй ще раз',
+        'send': 'Надіслати',
       },
       'en': {
         'settings': 'Settings',
@@ -235,6 +246,32 @@ class SettingsController extends ChangeNotifier {
         'fade_in_time': 'Fade-In Duration',
         'fade_out_time': 'Fade-Out Duration',
         'crossfade_time': 'Track Crossfade Duration',
+        // Settings categories
+        'category_general': 'General',
+        'category_appearance': 'Appearance',
+        'category_playback': 'Playback',
+        'category_equalizer': 'Equalizer & Presets',
+        'disabled': 'Disabled',
+        // About & changelog
+        'about': 'About',
+        'app_tagline': 'A modern open-source music player',
+        'import_preset': 'Import preset',
+        'import_preset_desc': 'Load a preset from a .json file',
+        'import_success': 'Preset "{name}" imported and activated successfully :)',
+        'import_error': 'No file selected or a read error occurred',
+        'changelog': 'Changelog',
+        'release': 'Release',
+        'release_notes': '• Smart search suggestions\n• Artist profiles: biography & top tracks\n• Progress bar in the mini player\n• Multi-select track operations\n• Stock equalizer preset',
+        'support_project': 'Support the project',
+        'support_project_desc': 'Help OpenTube grow — a donation funds new features and updates',
+        'report_bug': 'Report a bug',
+        'report_bug_desc': 'Describe the issue — the message goes straight to the developer on Telegram',
+        'report_bug_hint': 'What went wrong? Describe the steps to reproduce…',
+        'report_bug_empty': 'Please describe the issue first',
+        'report_bug_sending': 'Sending…',
+        'report_bug_success': 'Thanks! Bug report sent ✅',
+        'report_bug_error': 'Failed to send. Check your connection and try again',
+        'send': 'Send',
       },
       'pl': {
         'settings': 'Ustawienia',
@@ -285,6 +322,32 @@ class SettingsController extends ChangeNotifier {
         'fade_in_time': 'Czas narastania (Fade-In)',
         'fade_out_time': 'Czas wyciszania (Fade-Out)',
         'crossfade_time': 'Płynne miksowanie (Crossfade)',
+        // Settings categories
+        'category_general': 'Ogólne',
+        'category_appearance': 'Wygląd',
+        'category_playback': 'Odtwarzanie',
+        'category_equalizer': 'Korektor i profile',
+        'disabled': 'Wyłączone',
+        // About & changelog
+        'about': 'O aplikacji',
+        'app_tagline': 'Nowoczesny otwartoźródłowy odtwarzacz muzyki',
+        'import_preset': 'Importuj profil',
+        'import_preset_desc': 'Wczytaj profil z pliku .json',
+        'import_success': 'Profil "{name}" zaimportowano i aktywowano pomyślnie :)',
+        'import_error': 'Nie wybrano pliku lub wystąpił błąd odczytu',
+        'changelog': 'Zmiany',
+        'release': 'Wydanie',
+        'release_notes': '• Inteligentne podpowiedzi wyszukiwania\n• Profile wykonawcy: biografia i najlepsze utwory\n• Pasek postępu w mini odtwarzaczu\n• Zaznaczanie wielu utworów\n• Domyślny preset equalizera',
+        'support_project': 'Wesprzyj projekt',
+        'support_project_desc': 'Pomóż rozwijać OpenTube — darowizna sfinansuje nowe funkcje i aktualizacje',
+        'report_bug': 'Zgłoś błąd',
+        'report_bug_desc': 'Opisz problem — wiadomość trafi do dewelopera na Telegramie',
+        'report_bug_hint': 'Co poszło nie tak? Opisz kroki, aby odtworzyć problem…',
+        'report_bug_empty': 'Najpierw opisz problem',
+        'report_bug_sending': 'Wysyłanie…',
+        'report_bug_success': 'Dziękujemy! Zgłoszenie wysłane ✅',
+        'report_bug_error': 'Nie udało się wysłać. Sprawdź połączenie i spróbuj ponownie',
+        'send': 'Wyślij',
       },
       'de': {
         'settings': 'Einstellungen',
@@ -335,6 +398,32 @@ class SettingsController extends ChangeNotifier {
         'fade_in_time': 'Einblendzeit (Fade-In)',
         'fade_out_time': 'Ausblendzeit (Fade-Out)',
         'crossfade_time': 'Überblendzeit (Crossfade)',
+        // Settings categories
+        'category_general': 'Allgemein',
+        'category_appearance': 'Darstellung',
+        'category_playback': 'Wiedergabe',
+        'category_equalizer': 'Equalizer & Voreinstellungen',
+        'disabled': 'Deaktiviert',
+        // About & changelog
+        'about': 'Über die App',
+        'app_tagline': 'Ein moderner Open-Source-Musikplayer',
+        'import_preset': 'Voreinstellung importieren',
+        'import_preset_desc': 'Voreinstellung aus .json-Datei laden',
+        'import_success': 'Voreinstellung "{name}" erfolgreich importiert und aktiviert :)',
+        'import_error': 'Keine Datei ausgewählt oder Lesefehler',
+        'changelog': 'Änderungen',
+        'release': 'Release',
+        'release_notes': '• Intelligente Suchvorschläge\n• Künstlerprofile: Biografie & Top-Titel\n• Fortschrittsbalken im Mini-Player\n• Mehrfachauswahl von Titeln\n• Standard-Equalizer-Preset',
+        'support_project': 'Projekt unterstützen',
+        'support_project_desc': 'Helfen Sie, OpenTube weiterzuentwickeln — Spende für neue Funktionen & Updates',
+        'report_bug': 'Fehler melden',
+        'report_bug_desc': 'Beschreibe das Problem — die Nachricht geht direkt an den Entwickler auf Telegram',
+        'report_bug_hint': 'Was ist schiefgelaufen? Beschreibe die Schritte zur Reproduktion…',
+        'report_bug_empty': 'Bitte beschreibe zuerst das Problem',
+        'report_bug_sending': 'Wird gesendet…',
+        'report_bug_success': 'Danke! Fehlerbericht gesendet ✅',
+        'report_bug_error': 'Senden fehlgeschlagen. Prüfe die Verbindung und versuche es erneut',
+        'send': 'Senden',
       },
       'es': {
         'settings': 'Ajustes',
@@ -385,6 +474,32 @@ class SettingsController extends ChangeNotifier {
         'fade_in_time': 'Tiempo de aparición (Fade-In)',
         'fade_out_time': 'Tiempo de desvanecimiento (Fade-Out)',
         'crossfade_time': 'Fundido cruzado (Crossfade)',
+        // Settings categories
+        'category_general': 'General',
+        'category_appearance': 'Apariencia',
+        'category_playback': 'Reproducción',
+        'category_equalizer': 'Ecualizador y preajustes',
+        'disabled': 'Desactivado',
+        // About & changelog
+        'about': 'Acerca de',
+        'app_tagline': 'Un reproductor de música moderno y de código abierto',
+        'import_preset': 'Importar preajuste',
+        'import_preset_desc': 'Cargar un preajuste desde un archivo .json',
+        'import_success': 'Preajuste "{name}" importado y activado correctamente :)',
+        'import_error': 'No se seleccionó ningún archivo o hubo un error de lectura',
+        'changelog': 'Cambios',
+        'release': 'Lanzamiento',
+        'release_notes': '• Sugerencias inteligentes de búsqueda\n• Perfiles de artista: biografía y mejores canciones\n• Barra de progreso en el mini reproductor\n• Selección múltiple de pistas\n• Preset de ecualizador predeterminado',
+        'support_project': 'Apoyar el proyecto',
+        'support_project_desc': 'Ayuda a hacer crecer OpenTube — una donación financia nuevas funciones y actualizaciones',
+        'report_bug': 'Informar de un error',
+        'report_bug_desc': 'Describe el problema — el mensaje llega al desarrollador en Telegram',
+        'report_bug_hint': '¿Qué salió mal? Describe los pasos para reproducirlo…',
+        'report_bug_empty': 'Primero describe el problema',
+        'report_bug_sending': 'Enviando…',
+        'report_bug_success': '¡Gracias! Informe enviado ✅',
+        'report_bug_error': 'No se pudo enviar. Revisa tu conexión e inténtalo de nuevo',
+        'send': 'Enviar',
       },
     };
 

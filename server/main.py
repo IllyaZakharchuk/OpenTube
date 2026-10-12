@@ -74,10 +74,16 @@ def _extract_playlist_info(target_url, ydl_opts):
         for entry in (res.get("entries") or []):
             if not entry:
                 continue
+            # Real track length in seconds (yt-dlp exposes this on flat
+            # entries) — the app persists it and renders 00:00 without it.
+            duration = entry.get("duration")
+            if isinstance(duration, float):
+                duration = int(round(duration))
             tracks.append({
                 "title": entry.get("title"),
                 "artist": entry.get("uploader") or entry.get("channel"),
                 "videoId": entry.get("id"),
+                "duration": duration,
             })
         return {"title": res.get("title") or "YouTube Playlist", "tracks": tracks}
 
@@ -345,6 +351,45 @@ def health_check():
     }
 
 
+# --- Bug reports to Telegram -------------------------------------------------
+# The app sends user-written bug reports here; the server forwards them to the
+# owner's Telegram via the Bot API. Credentials default to the bundled values
+# but can be rotated without a redeploy through environment variables.
+TELEGRAM_BOT_TOKEN = os.environ.get(
+    "BUG_REPORT_BOT_TOKEN", "8843934229:AAHa5gim2dHFVuK7Gr3BX6UMkDyEb6WGkxg"
+)
+TELEGRAM_CHAT_ID = os.environ.get("BUG_REPORT_CHAT_ID", "1277016263")
+
+
+class BugReportBody(BaseModel):
+    message: str = ""
+    app_version: str = ""
+
+
+@app.post("/api/report-bug")
+async def report_bug(body: BugReportBody):
+    """Accept a bug report from the app and forward it to Telegram."""
+    text = (body.message or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty message")
+    if len(text) > 3000:
+        text = text[:3000] + "…"
+    version = (body.app_version or "").strip() or "?"
+    tg_text = f"🐞 Баг-репорт OpenTube {version}\n\n{text}"
+    try:
+        client = await _get_http_client()
+        resp = await client.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": tg_text},
+            timeout=15.0,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"telegram unreachable: {e}")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"telegram HTTP {resp.status_code}")
+    return {"ok": True}
+
+
 @app.get("/api/search")
 async def search_tracks(q: str, limit: int = 10, offset: int = 0):
     limit = max(1, min(limit, 50))
@@ -362,6 +407,43 @@ async def search_tracks(q: str, limit: int = 10, offset: int = 0):
 
     results = await cached(cache_key, TTL_SECONDS, producer)
     return {"query": q, "results": (results or [])[offset:offset + limit]}
+
+
+@app.get("/api/suggest")
+async def suggest(q: str):
+    """Autocomplete hints for the client search box.
+
+    Proxies YouTube's query-suggestion feed through the shared proxied
+    httpx client and caches results briefly. Suggestions are best-effort:
+    any upstream failure returns an empty list instead of an error, so a
+    flaky suggestion feed can never break the search UI.
+    """
+    q = (q or "").strip()
+    if len(q) < 2:
+        return {"query": q, "suggestions": []}
+
+    cache_key = f"suggest:{q}"
+
+    async def producer():
+        try:
+            client = await _get_http_client()
+            resp = await client.get(
+                "https://suggestqueries.google.com/complete/search",
+                params={"client": "firefox", "ds": "yt", "q": q},
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            # Response shape: ["query", ["hint 1", "hint 2", ...]]
+            if isinstance(data, list) and len(data) > 1 and isinstance(data[1], list):
+                hints = [str(s).strip() for s in data[1] if s]
+                return hints[:8]
+            return []
+        except Exception:
+            return []
+
+    suggestions = await cached(cache_key, TTL_SECONDS, producer)
+    return {"query": q, "suggestions": suggestions or []}
 
 
 @app.get("/api/import/youtube/playlist")
