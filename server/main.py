@@ -14,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+from services.mashup_service import MashupError, MashupService
+
 app = FastAPI(title="OpenTube API")
 
 app.add_middleware(
@@ -519,6 +521,43 @@ class RecommendBody(BaseModel):
     seeds: List[Any] = []
     exclude_ids: List[str] = []
     limit: int = 20
+
+
+class MashupBody(BaseModel):
+    track_id_1: str
+    track_id_2: str
+    output_name: Optional[str] = None
+
+
+@app.post("/api/mashup")
+async def create_mashup(body: MashupBody) -> FileResponse:
+    """Create a DJ mashup: vocals of track_id_1 + instrumental of track_id_2.
+
+    The expensive CPU work (Demucs stem separation + librosa time-stretch)
+    runs synchronously inside the endpoint; FastAPI will offload it to the
+    thread pool so the event loop is not blocked. Intermediate WAV files are
+    removed automatically — only the final MP3 is kept and returned.
+
+    Raises HTTP 400 if a track cannot be resolved or audio processing fails,
+    HTTP 500 for unexpected errors.
+    """
+    service = MashupService()
+    try:
+        output_path = await service.create_mashup(
+            body.track_id_1, body.track_id_2, body.output_name
+        )
+    except MashupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001 — surface unexpected errors as 500
+        raise HTTPException(
+            status_code=500, detail=f"Mashup processing failed: {exc}"
+        )
+
+    return FileResponse(
+        path=str(output_path),
+        media_type="audio/mpeg",
+        filename=output_path.name,
+    )
 
 
 @app.post("/api/recommend")
